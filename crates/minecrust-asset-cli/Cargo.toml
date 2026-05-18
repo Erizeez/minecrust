@@ -1,0 +1,14 @@
+[package]
+name = "minecrust-asset-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+bincode = "1.3.3"
+clap = { version = "4.6.1", features = ["derive"] }
+image = "0.25.10"
+minecrust-shared = { version = "0.1.0", path = "../minecrust-shared" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+zip = "8.6.0"

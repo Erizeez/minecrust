@@ -1,0 +1,16 @@
+# Rust
+target/
+Cargo.lock
+
+# Assets
+# Ignore raw jars and processed assets
+assets/raw/
+assets/processed/
+*.mca
+*.jar
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo

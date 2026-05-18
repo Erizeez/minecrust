@@ -11,6 +11,7 @@ pub struct AppSettings {
     pub render_distance: i32,
     pub vsync: bool,
     pub fullscreen: bool,
+    pub language: String,
 }
 
 impl Default for AppSettings {
@@ -19,6 +20,7 @@ impl Default for AppSettings {
             render_distance: 4,
             vsync: true,
             fullscreen: false,
+            language: "zh_cn".to_string(),
         }
     }
 }

@@ -13,3 +13,4 @@ pub use egui;
 pub use window::{EngineApp, EngineRunner};
 pub use renderer::{Renderer, Vertex};
 pub use camera::{Camera, CameraUniform};
+pub use audio::AudioManager;

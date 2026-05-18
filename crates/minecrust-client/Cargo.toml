@@ -12,5 +12,8 @@ log = "0.4.29"
 minecrust-engine = { version = "0.1.0", path = "../minecrust-engine" }
 minecrust-shared = { version = "0.1.0", path = "../minecrust-shared" }
 pollster = "0.4.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+ureq = "2.12.1"
 wgpu = "22.1.0"
 winit = "0.30.13"

@@ -1,5 +1,7 @@
 pub mod app;
+pub mod asset_loader;
 pub mod game;
+pub mod lang;
 pub mod state;
 pub mod ui;
 

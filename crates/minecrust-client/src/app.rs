@@ -1,7 +1,9 @@
+use crate::asset_loader::AssetLoader;
 use crate::game::GameSession;
+use crate::lang::LangManager;
 use crate::state::{AppSettings, AppState};
 use crate::ui;
-use minecrust_engine::{Camera, CameraUniform, EngineApp, Renderer};
+use minecrust_engine::{egui, AudioManager, Camera, CameraUniform, EngineApp, Renderer};
 use minecrust_shared::AssetPack;
 use std::fs::File;
 use std::io::Read;
@@ -20,6 +22,9 @@ pub struct MinecrustApp {
     state: AppState,
     settings: AppSettings,
     game: GameSession,
+    audio: AudioManager,
+    lang: LangManager,
+    loader: AssetLoader,
 }
 
 impl MinecrustApp {
@@ -40,6 +45,9 @@ impl MinecrustApp {
             state: AppState::MainMenu,
             settings: AppSettings::default(),
             game: GameSession::new(),
+            audio: AudioManager::new(),
+            lang: LangManager::new(),
+            loader: AssetLoader::new(),
         }
     }
 }
@@ -70,7 +78,64 @@ impl EngineApp for MinecrustApp {
             log::error!("Failed to load assets.mca! Run asset-cli first.");
         }
 
+        self.lang.load(&self.settings.language, &self.loader);
+
+        // Initialize egui custom fonts
+        let mut font_defs = egui::FontDefinitions::default();
+        let mut loaded_minecraft = false;
+
+        // Load Minecraft custom English font
+        let font_path = "assets/raw/font/MinecraftDefault-Regular.ttf";
+        if let Ok(mut font_file) = File::open(font_path) {
+            let mut font_bytes = Vec::new();
+            if font_file.read_to_end(&mut font_bytes).is_ok() {
+                font_defs.font_data.insert(
+                    "minecraft".to_string(),
+                    egui::FontData::from_owned(font_bytes),
+                );
+                
+                // Add to proportional and monospace fonts at first position
+                font_defs.families.get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .insert(0, "minecraft".to_string());
+                font_defs.families.get_mut(&egui::FontFamily::Monospace)
+                    .unwrap()
+                    .push("minecraft".to_string());
+                
+                loaded_minecraft = true;
+            }
+        }
+
+        // Load GNU Unifont (Minecraft original CJK pixel font) as fallback
+        let unifont_path = "assets/raw/font/unifont.ttf";
+        if let Ok(mut unifont_file) = File::open(unifont_path) {
+            let mut unifont_bytes = Vec::new();
+            if unifont_file.read_to_end(&mut unifont_bytes).is_ok() {
+                font_defs.font_data.insert(
+                    "unifont".to_string(),
+                    egui::FontData::from_owned(unifont_bytes),
+                );
+                
+                font_defs.families.get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .push("unifont".to_string());
+                font_defs.families.get_mut(&egui::FontFamily::Monospace)
+                    .unwrap()
+                    .push("unifont".to_string());
+                
+                println!("Minecraft original CJK pixel font (Unifont) loaded successfully!");
+            }
+        }
+
+        if loaded_minecraft {
+            renderer.ui.context.set_fonts(font_defs);
+            println!("Minecraft custom pixel fonts configured successfully!");
+        }
+
         self.renderer = Some(renderer);
+        
+        // Start Menu Music
+        self.audio.play_music("assets/raw/minecraft/sounds/music/menu/mutation.ogg");
     }
 
     fn on_update(&mut self, dt: f64) {
@@ -107,18 +172,19 @@ impl EngineApp for MinecrustApp {
 
     fn on_keyboard(&mut self, key: Key, state: ElementState) {
         if key == Key::Named(NamedKey::Escape) && state == ElementState::Pressed {
-            match self.state {
-                AppState::InGame => self.state = AppState::InGameMenu,
-                AppState::InGameMenu => self.state = AppState::InGame,
+            let next_state = match self.state {
+                AppState::InGame => AppState::InGameMenu,
+                AppState::InGameMenu => AppState::InGame,
                 AppState::Settings { from_in_game } => {
-                    self.state = if from_in_game {
+                    if from_in_game {
                         AppState::InGameMenu
                     } else {
                         AppState::MainMenu
-                    };
+                    }
                 }
-                AppState::MainMenu => {} // Do nothing
-            }
+                AppState::MainMenu => AppState::MainMenu,
+            };
+            self.transition_state(next_state);
         }
 
         if self.state == AppState::InGame {
@@ -133,6 +199,7 @@ impl EngineApp for MinecrustApp {
     }
 
     fn on_render(&mut self, window: &Window) {
+        let previous_state = self.state;
         let in_game = self.state == AppState::InGame;
 
         if in_game {
@@ -146,6 +213,7 @@ impl EngineApp for MinecrustApp {
         let mut exit_requested = false;
         let mut new_vsync = self.settings.vsync;
         let mut new_fullscreen = self.settings.fullscreen;
+        let prev_lang = self.settings.language.clone();
 
         if let Some(renderer) = &mut self.renderer {
             let meshes_iter = self.game.chunk_meshes.values()
@@ -153,7 +221,7 @@ impl EngineApp for MinecrustApp {
 
             match renderer.draw(window, meshes_iter, |ctx| {
                 if !in_game {
-                    exit_requested = ui::render_menus(ctx, &mut self.state, &mut self.settings);
+                    exit_requested = ui::render_menus(ctx, &mut self.state, &mut self.settings, &self.lang);
                 }
             }) {
                 Ok(_) => {}
@@ -161,6 +229,14 @@ impl EngineApp for MinecrustApp {
                 Err(wgpu::SurfaceError::OutOfMemory) => log::error!("Out of memory!"),
                 Err(e) => log::error!("{:?}", e),
             }
+        }
+
+        if self.settings.language != prev_lang {
+            self.lang.load(&self.settings.language, &self.loader);
+        }
+
+        if self.state != previous_state {
+            self.transition_state(self.state);
         }
 
         // Apply setting changes
@@ -196,5 +272,23 @@ impl EngineApp for MinecrustApp {
             }
         }
         false
+    }
+}
+
+impl MinecrustApp {
+    fn transition_state(&mut self, next_state: AppState) {
+        if self.state != next_state {
+            // Check if we are crossing the InGame / MainMenu boundary to change music
+            let was_in_game_branch = matches!(self.state, AppState::InGame | AppState::InGameMenu | AppState::Settings { from_in_game: true });
+            let is_in_game_branch = matches!(next_state, AppState::InGame | AppState::InGameMenu | AppState::Settings { from_in_game: true });
+
+            if !was_in_game_branch && is_in_game_branch {
+                self.audio.play_music("assets/raw/minecraft/sounds/music/game/clark.ogg");
+            } else if was_in_game_branch && !is_in_game_branch {
+                self.audio.play_music("assets/raw/minecraft/sounds/music/menu/mutation.ogg");
+            }
+
+            self.state = next_state;
+        }
     }
 }

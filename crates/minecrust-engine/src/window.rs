@@ -10,6 +10,9 @@ pub trait EngineApp {
     fn on_update(&mut self, dt: f64);
     fn on_render(&mut self);
     fn on_resize(&mut self, width: u32, height: u32);
+    fn on_keyboard(&mut self, key: Key, state: ElementState) {}
+    fn on_mouse_move(&mut self, dx: f64, dy: f64) {}
+    fn on_mouse_click(&mut self, state: ElementState, button: winit::event::MouseButton) {}
 }
 
 pub struct EngineRunner<A: EngineApp> {
@@ -54,16 +57,15 @@ impl<A: EngineApp> ApplicationHandler for EngineRunner<A> {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => {
-                event_loop.exit();
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.logical_key == Key::Named(NamedKey::Escape) && event.state == ElementState::Pressed {
+                    event_loop.exit();
+                } else {
+                    self.app.on_keyboard(event.logical_key.clone(), event.state);
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                self.app.on_mouse_click(state, button);
             }
             WindowEvent::Resized(physical_size) => {
                 self.app.on_resize(physical_size.width, physical_size.height);
@@ -82,6 +84,17 @@ impl<A: EngineApp> ApplicationHandler for EngineRunner<A> {
                 }
             }
             _ => (),
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        if let winit::event::DeviceEvent::MouseMotion { delta } = event {
+            self.app.on_mouse_move(delta.0, delta.1);
         }
     }
 

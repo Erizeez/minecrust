@@ -47,8 +47,8 @@ fn main() -> anyhow::Result<()> {
             println!("Loading models...");
             
             // In a real scenario, we'd iterate over all files in the zip starting with `assets/minecraft/models/block/`
-            // For MVP, we hardcode the dependencies for `stone` and `dirt`
-            let blocks_to_parse = vec!["stone", "dirt", "cube_all", "cube"];
+            // For MVP, we hardcode the dependencies for `stone` and `dirt`, and `grass_block`
+            let blocks_to_parse = vec!["stone", "dirt", "grass_block", "block", "cube_all", "cube"];
             for block in &blocks_to_parse {
                 let path = format!("assets/minecraft/models/block/{}.json", block);
                 if let Ok(json) = extractor.read_file_as_string(&path) {
@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
             let mut block_dict = HashMap::new();
 
             println!("Resolving and packing textures...");
-            let target_blocks = vec!["stone", "dirt"];
+            let target_blocks = vec!["stone", "dirt", "grass_block"];
             for target in target_blocks {
                 let resolved = resolver.resolve_textures(&format!("minecraft:block/{}", target));
                 
@@ -75,7 +75,15 @@ fn main() -> anyhow::Result<()> {
                 // MC faces: up, down, north, south, east, west
                 let faces = vec!["north", "south", "east", "west", "up", "down"];
                 for (i, face) in faces.iter().enumerate() {
-                    if let Some(tex_name) = resolved.get(*face).or_else(|| resolved.get("all")) {
+                    let tex_name = resolved.get(*face)
+                        .or_else(|| resolved.get("all"))
+                        .or_else(|| match *face {
+                            "up" => resolved.get("top"),
+                            "down" => resolved.get("bottom"),
+                            _ => resolved.get("side"),
+                        });
+                        
+                    if let Some(tex_name) = tex_name {
                         // Strip 'minecraft:block/' prefix if present
                         let tex_path = tex_name.replace("minecraft:", "");
                         let img_path = format!("assets/minecraft/textures/{}.png", tex_path);

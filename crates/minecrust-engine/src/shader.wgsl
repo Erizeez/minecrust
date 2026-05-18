@@ -14,11 +14,13 @@ var s_diffuse: sampler;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) uv: vec2<f32>,
+    @location(2) color: vec3<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
+    @location(1) color: vec3<f32>,
 };
 
 @vertex
@@ -27,6 +29,7 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
     out.uv = model.uv;
+    out.color = model.color;
     // In the future, we will multiply by a Model matrix here per chunk/entity.
     // For MVP, we assume model.position is already in world space relative to camera, or we just draw at origin.
     out.clip_position = camera.view_proj * vec4<f32>(model.position, 1.0);
@@ -35,9 +38,9 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let color = textureSample(t_diffuse, s_diffuse, in.uv);
-    if (color.a < 0.1) {
+    let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
+    if (tex_color.a < 0.1) {
         discard;
     }
-    return color;
+    return tex_color * vec4<f32>(in.color, 1.0);
 }

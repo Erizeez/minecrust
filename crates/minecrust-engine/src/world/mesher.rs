@@ -14,9 +14,9 @@ impl Mesher {
     /// Generates a mesh for a chunk.
     /// `uv_resolver` takes a `block_id` and a `face_idx` (0=North, 1=South, 2=East, 3=West, 4=Up, 5=Down)
     /// and returns the (u0, v0, u1, v1) coordinates.
-    pub fn mesh_chunk<F>(chunk: &Chunk, uv_resolver: F) -> ChunkMesh
+    pub fn mesh_chunk<F>(chunk: &Chunk, data_resolver: F) -> ChunkMesh
     where
-        F: Fn(u16, usize) -> [f32; 4],
+        F: Fn(u16, usize) -> ([f32; 4], [f32; 3]),
     {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
@@ -38,27 +38,33 @@ impl Mesher {
 
                     // North (-Z)
                     if z == 0 || chunk.get_block(x, y, z - 1) == 0 {
-                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::NEG_Z, uv_resolver(block_id, 0));
+                        let (uvs, color) = data_resolver(block_id, 0);
+                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::NEG_Z, uvs, color);
                     }
                     // South (+Z)
                     if z == CHUNK_DEPTH - 1 || chunk.get_block(x, y, z + 1) == 0 {
-                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::Z, uv_resolver(block_id, 1));
+                        let (uvs, color) = data_resolver(block_id, 1);
+                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::Z, uvs, color);
                     }
                     // East (+X)
                     if x == CHUNK_WIDTH - 1 || chunk.get_block(x + 1, y, z) == 0 {
-                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::X, uv_resolver(block_id, 2));
+                        let (uvs, color) = data_resolver(block_id, 2);
+                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::X, uvs, color);
                     }
                     // West (-X)
                     if x == 0 || chunk.get_block(x - 1, y, z) == 0 {
-                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::NEG_X, uv_resolver(block_id, 3));
+                        let (uvs, color) = data_resolver(block_id, 3);
+                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::NEG_X, uvs, color);
                     }
                     // Up (+Y)
                     if y == MAX_Y || chunk.get_block(x, y + 1, z) == 0 {
-                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::Y, uv_resolver(block_id, 4));
+                        let (uvs, color) = data_resolver(block_id, 4);
+                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::Y, uvs, color);
                     }
                     // Down (-Y)
                     if y == MIN_Y || chunk.get_block(x, y - 1, z) == 0 {
-                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::NEG_Y, uv_resolver(block_id, 5));
+                        let (uvs, color) = data_resolver(block_id, 5);
+                        Self::add_face(&mut vertices, &mut indices, pos, Vec3::NEG_Y, uvs, color);
                     }
                 }
             }
@@ -67,7 +73,7 @@ impl Mesher {
         ChunkMesh { vertices, indices }
     }
 
-    fn add_face(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, pos: Vec3, normal: Vec3, uvs: [f32; 4]) {
+    fn add_face(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, pos: Vec3, normal: Vec3, uvs: [f32; 4], color: [f32; 3]) {
         let (u0, v0, u1, v1) = (uvs[0], uvs[1], uvs[2], uvs[3]);
         let base_idx = vertices.len() as u32;
 
@@ -82,10 +88,10 @@ impl Mesher {
         let v2_pos = pos + normal * 0.5 + tangent * 0.5 + bitangent * 0.5;
         let v3_pos = pos + normal * 0.5 - tangent * 0.5 + bitangent * 0.5;
 
-        vertices.push(Vertex { position: v0_pos.into(), uv: [u0, v1] });
-        vertices.push(Vertex { position: v1_pos.into(), uv: [u1, v1] });
-        vertices.push(Vertex { position: v2_pos.into(), uv: [u1, v0] });
-        vertices.push(Vertex { position: v3_pos.into(), uv: [u0, v0] });
+        vertices.push(Vertex { position: v0_pos.into(), uv: [u0, v1], color });
+        vertices.push(Vertex { position: v1_pos.into(), uv: [u1, v1], color });
+        vertices.push(Vertex { position: v2_pos.into(), uv: [u1, v0], color });
+        vertices.push(Vertex { position: v3_pos.into(), uv: [u0, v0], color });
 
         indices.extend_from_slice(&[
             base_idx, base_idx + 1, base_idx + 2,

@@ -1,4 +1,5 @@
-use minecrust_engine::world::{Mesher, WorldManager};
+use minecrust_engine::input::InputManager;
+use minecrust_engine::world::{Mesher, WorldManager, player::PlayerController};
 use minecrust_engine::{Camera, CameraUniform, EngineApp, EngineRunner, Renderer, Vertex};
 use minecrust_shared::AssetPack;
 use std::collections::HashMap;
@@ -6,6 +7,8 @@ use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
 use winit::window::Window;
+use winit::keyboard::{Key, NamedKey};
+use winit::event::ElementState;
 
 struct Mesh {
     vertex_buffer: wgpu::Buffer,
@@ -19,7 +22,12 @@ struct MinecrustClient {
     camera_uniform: CameraUniform,
     world_manager: WorldManager,
     chunk_meshes: HashMap<(i32, i32), Mesh>,
+    input_manager: InputManager,
     time: f64,
+    asset_pack: Option<AssetPack>,
+    
+    // Player State
+    player: PlayerController,
 }
 
 impl MinecrustClient {
@@ -38,7 +46,10 @@ impl MinecrustClient {
             camera_uniform: CameraUniform::new(),
             world_manager: WorldManager::new(12345),
             chunk_meshes: HashMap::new(),
+            input_manager: InputManager::new(),
             time: 0.0,
+            asset_pack: None,
+            player: PlayerController::new(glam::Vec3::new(8.0, 60.0, 8.0)),
         }
     }
 }
@@ -48,6 +59,9 @@ impl EngineApp for MinecrustClient {
         env_logger::init();
         log::info!("Initializing Minecrust Client...");
         
+        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+        window.set_cursor_visible(false);
+
         let mut renderer = pollster::block_on(Renderer::new(window));
         
         // Load AssetPack
@@ -61,42 +75,8 @@ impl EngineApp for MinecrustClient {
 
             renderer.load_atlas_bytes(&pack.atlas_png, 1024, 1024);
 
-            // Generate and mesh 3x3 chunks
-            let radius = 1;
-            for cx in -radius..=radius {
-                for cz in -radius..=radius {
-                    let chunk = self.world_manager.chunk_manager.get_or_generate(cx, cz);
-                    
-                    let chunk_mesh_data = Mesher::mesh_chunk(chunk, |block_id, face_idx| {
-                        // Very basic mapping based on hardcoded generator IDs (1: stone, 2: dirt, 3: grass_block)
-                        let block_name = match block_id {
-                            1 => "minecraft:stone",
-                            2 => "minecraft:dirt",
-                            3 => "minecraft:grass_block",
-                            _ => "minecraft:dirt", // Fallback
-                        };
-                        if let Some(block_data) = pack.block_dict.get(block_name) {
-                            // Grass block needs top/bottom/side logic, but AssetPack usually handles UV faces.
-                            // In simplified mesher, 0:North, 1:South, 2:East, 3:West, 4:Up, 5:Down
-                            // But Minecraft block models map faces differently. For now we just use face_idx mod len.
-                            let face = &block_data.uv_faces[face_idx % block_data.uv_faces.len()];
-                            [face[0], face[1], face[2], face[3]]
-                        } else {
-                            [0.0, 0.0, 0.0, 0.0]
-                        }
-                    });
-
-                    if chunk_mesh_data.indices.is_empty() { continue; }
-
-                    let mesh = Mesh {
-                        vertex_buffer: renderer.create_vertex_buffer(&chunk_mesh_data.vertices),
-                        index_buffer: renderer.create_index_buffer(&chunk_mesh_data.indices),
-                        index_count: chunk_mesh_data.indices.len() as u32,
-                    };
-
-                    self.chunk_meshes.insert((cx, cz), mesh);
-                }
-            }
+            // Save pack for dynamic loading
+            self.asset_pack = Some(pack);
         } else {
             log::error!("Failed to load assets.mca! Run asset-cli first.");
         }
@@ -106,18 +86,91 @@ impl EngineApp for MinecrustClient {
 
     fn on_update(&mut self, dt: f64) {
         self.time += dt;
+
+        // Update player logic (physics, input, flying)
+        self.player.update(&mut self.input_manager, &mut self.world_manager, dt, self.time);
+
+        // Dynamic Chunk Loading
+        let player_cx = (self.player.position.x / minecrust_engine::world::chunk::CHUNK_WIDTH as f32).floor() as i32;
+        let player_cz = (self.player.position.z / minecrust_engine::world::chunk::CHUNK_DEPTH as f32).floor() as i32;
         
-        // Orbit camera around chunk origin
-        let radius = 60.0;
-        self.camera.eye.x = 8.0 + (self.time.cos() * radius) as f32;
-        self.camera.eye.z = 8.0 + (self.time.sin() * radius) as f32;
-        self.camera.eye.y = 40.0;
-        self.camera.target = glam::Vec3::new(8.0, 10.0, 8.0);
+        let render_distance = 4;
+        let mut expected_chunks = std::collections::HashSet::new();
+        
+        for cx in (player_cx - render_distance)..=(player_cx + render_distance) {
+            for cz in (player_cz - render_distance)..=(player_cz + render_distance) {
+                expected_chunks.insert((cx, cz));
+            }
+        }
+
+        // Unload old chunks
+        self.chunk_meshes.retain(|pos, _| expected_chunks.contains(pos));
+
+        // Load and mesh new chunks
+        if let (Some(renderer), Some(pack)) = (&self.renderer, &self.asset_pack) {
+            for pos in expected_chunks {
+                if !self.chunk_meshes.contains_key(&pos) {
+                    let chunk = self.world_manager.chunk_manager.get_or_generate(pos.0, pos.1);
+                    
+                    let chunk_mesh_data = Mesher::mesh_chunk(chunk, |block_id, face_idx| {
+                        let block_name = match block_id {
+                            1 => "minecraft:stone",
+                            2 => "minecraft:dirt",
+                            3 => "minecraft:grass_block",
+                            _ => "minecraft:dirt",
+                        };
+                        let color = if block_id == 3 && face_idx == 4 { // Grass block Top
+                            [0.44, 0.70, 0.33] // Plains green tint
+                        } else {
+                            [1.0, 1.0, 1.0]
+                        };
+
+                        if let Some(block_data) = pack.block_dict.get(block_name) {
+                            let face = &block_data.uv_faces[face_idx % block_data.uv_faces.len()];
+                            ([face[0], face[1], face[2], face[3]], color)
+                        } else {
+                            ([0.0, 0.0, 0.0, 0.0], color)
+                        }
+                    });
+
+                    if !chunk_mesh_data.indices.is_empty() {
+                        let mesh = Mesh {
+                            vertex_buffer: renderer.create_vertex_buffer(&chunk_mesh_data.vertices),
+                            index_buffer: renderer.create_index_buffer(&chunk_mesh_data.indices),
+                            index_count: chunk_mesh_data.indices.len() as u32,
+                        };
+                        self.chunk_meshes.insert(pos, mesh);
+                    } else {
+                        // Insert an empty mesh to mark it as loaded so we don't try again
+                        let mesh = Mesh {
+                            vertex_buffer: renderer.create_vertex_buffer(&[]),
+                            index_buffer: renderer.create_index_buffer(&[]),
+                            index_count: 0,
+                        };
+                        self.chunk_meshes.insert(pos, mesh);
+                    }
+                }
+            }
+        }
+
+        // Update Camera Eye and Target
+        let (eye, target) = self.player.get_camera_vectors();
+        self.camera.eye = eye;
+        self.camera.target = target;
+        
         self.camera_uniform.update_view_proj(&self.camera);
         
         if let Some(renderer) = &mut self.renderer {
             renderer.update_camera(&self.camera_uniform);
         }
+    }
+
+    fn on_keyboard(&mut self, key: Key, state: ElementState) {
+        self.input_manager.set_key(key, state == ElementState::Pressed);
+    }
+
+    fn on_mouse_move(&mut self, dx: f64, dy: f64) {
+        self.input_manager.add_mouse_delta(dx, dy);
     }
 
     fn on_render(&mut self) {

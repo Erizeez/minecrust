@@ -29,7 +29,7 @@ enum Commands {
         jar_path: PathBuf,
 
         /// Output .mca file path
-        #[arg(short, long, default_value = "../../assets/processed/assets.mca")]
+        #[arg(short, long, default_value = "assets/processed/assets.mca")]
         out_file: PathBuf,
     },
 }

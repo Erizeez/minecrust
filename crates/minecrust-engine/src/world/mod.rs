@@ -1,0 +1,46 @@
+pub mod chunk;
+pub mod generator;
+pub mod mesher;
+
+pub use chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_VOLUME, MIN_Y, MAX_Y};
+pub use generator::WorldGenerator;
+pub use mesher::{Mesher, ChunkMesh};
+
+use std::collections::HashMap;
+
+// World Subsystem skeleton
+// This will encapsulate hecs::World and System dispatching
+pub struct WorldManager {
+    pub ecs: hecs::World,
+    pub chunk_manager: ChunkManager,
+}
+
+impl WorldManager {
+    pub fn new(seed: u32) -> Self {
+        Self {
+            ecs: hecs::World::new(),
+            chunk_manager: ChunkManager::new(seed),
+        }
+    }
+}
+
+pub struct ChunkManager {
+    pub chunks: HashMap<(i32, i32), Chunk>,
+    pub generator: WorldGenerator,
+}
+
+impl ChunkManager {
+    pub fn new(seed: u32) -> Self {
+        Self {
+            chunks: HashMap::new(),
+            generator: WorldGenerator::new(seed),
+        }
+    }
+
+    /// Retrieves a chunk, generating it synchronously if not present (MVP implementation)
+    pub fn get_or_generate(&mut self, chunk_x: i32, chunk_z: i32) -> &Chunk {
+        self.chunks.entry((chunk_x, chunk_z)).or_insert_with(|| {
+            self.generator.generate_chunk(chunk_x, chunk_z)
+        })
+    }
+}

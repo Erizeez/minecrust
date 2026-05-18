@@ -341,7 +341,7 @@ impl Renderer {
         })
     }
 
-    pub fn create_index_buffer(&self, indices: &[u16]) -> wgpu::Buffer {
+    pub fn create_index_buffer(&self, indices: &[u32]) -> wgpu::Buffer {
         self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
             contents: bytemuck::cast_slice(indices),
@@ -349,11 +349,9 @@ impl Renderer {
         })
     }
 
-    pub fn draw_mesh(
+    pub fn draw_meshes<'a>(
         &mut self,
-        vertex_buffer: &wgpu::Buffer,
-        index_buffer: &wgpu::Buffer,
-        index_count: u32,
+        meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32)>,
     ) -> Result<(), wgpu::SurfaceError> {
         if self.atlas_bind_group.is_none() {
             return Ok(()); // Nothing to draw if no atlas
@@ -397,9 +395,12 @@ impl Renderer {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_bind_group(1, self.atlas_bind_group.as_ref().unwrap(), &[]);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..index_count, 0, 0..1);
+            
+            for (vertex_buffer, index_buffer, index_count) in meshes {
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..index_count, 0, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

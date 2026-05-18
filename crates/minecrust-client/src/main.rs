@@ -1,5 +1,7 @@
+use minecrust_engine::world::{Mesher, WorldManager};
 use minecrust_engine::{Camera, CameraUniform, EngineApp, EngineRunner, Renderer, Vertex};
 use minecrust_shared::AssetPack;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::sync::Arc;
@@ -15,7 +17,8 @@ struct MinecrustClient {
     renderer: Option<Renderer>,
     camera: Camera,
     camera_uniform: CameraUniform,
-    mesh: Option<Mesh>,
+    world_manager: WorldManager,
+    chunk_meshes: HashMap<(i32, i32), Mesh>,
     time: f64,
 }
 
@@ -24,72 +27,18 @@ impl MinecrustClient {
         Self {
             renderer: None,
             camera: Camera {
-                eye: glam::Vec3::new(3.0, 3.0, 3.0),
-                target: glam::Vec3::ZERO,
+                eye: glam::Vec3::new(8.0, 40.0, 8.0),
+                target: glam::Vec3::new(8.0, 0.0, 8.0),
                 up: glam::Vec3::Y,
                 aspect: 16.0 / 9.0,
                 fovy: std::f32::consts::FRAC_PI_4,
                 znear: 0.1,
-                zfar: 100.0,
+                zfar: 1000.0,
             },
             camera_uniform: CameraUniform::new(),
-            mesh: None,
+            world_manager: WorldManager::new(12345),
+            chunk_meshes: HashMap::new(),
             time: 0.0,
-        }
-    }
-
-    fn build_voxel_mesh(renderer: &Renderer, pack: &AssetPack, block_name: &str) -> Mesh {
-        let block_data = pack.block_dict.get(block_name).expect("Block not found in MCA pack!");
-        
-        // Cube vertices (24 vertices, 4 per face: North, South, East, West, Up, Down)
-        // Order matches UV faces: [North, South, East, West, Up, Down]
-        // Minecraft Y-Up coordinate system:
-        // North: -Z, South: +Z, East: +X, West: -X, Up: +Y, Down: -Y
-
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        
-        let mut add_face = |normal: glam::Vec3, uv_face_idx: usize| {
-            let uvs = block_data.uv_faces[uv_face_idx];
-            let (u0, v0, u1, v1) = (uvs[0], uvs[1], uvs[2], uvs[3]);
-            
-            let base_idx = vertices.len() as u16;
-            
-            // Build generic face perpendicular to normal
-            let (tangent, bitangent) = if normal.y.abs() > 0.5 {
-                (glam::Vec3::X, glam::Vec3::Z * -normal.y) // Up/Down
-            } else {
-                (glam::Vec3::Y.cross(normal), glam::Vec3::Y) // Sides
-            };
-
-            // 4 corners
-            let v0_pos = normal * 0.5 - tangent * 0.5 - bitangent * 0.5;
-            let v1_pos = normal * 0.5 + tangent * 0.5 - bitangent * 0.5;
-            let v2_pos = normal * 0.5 + tangent * 0.5 + bitangent * 0.5;
-            let v3_pos = normal * 0.5 - tangent * 0.5 + bitangent * 0.5;
-
-            vertices.push(Vertex { position: v0_pos.into(), uv: [u0, v1] });
-            vertices.push(Vertex { position: v1_pos.into(), uv: [u1, v1] });
-            vertices.push(Vertex { position: v2_pos.into(), uv: [u1, v0] });
-            vertices.push(Vertex { position: v3_pos.into(), uv: [u0, v0] });
-
-            indices.extend_from_slice(&[
-                base_idx, base_idx + 1, base_idx + 2,
-                base_idx, base_idx + 2, base_idx + 3,
-            ]);
-        };
-
-        add_face(glam::Vec3::NEG_Z, 0); // North
-        add_face(glam::Vec3::Z, 1);     // South
-        add_face(glam::Vec3::X, 2);     // East
-        add_face(glam::Vec3::NEG_X, 3); // West
-        add_face(glam::Vec3::Y, 4);     // Up
-        add_face(glam::Vec3::NEG_Y, 5); // Down
-
-        Mesh {
-            vertex_buffer: renderer.create_vertex_buffer(&vertices),
-            index_buffer: renderer.create_index_buffer(&indices),
-            index_count: indices.len() as u32,
         }
     }
 }
@@ -111,9 +60,43 @@ impl EngineApp for MinecrustClient {
             log::info!("AssetPack loaded. Atlas size: {} bytes", pack.atlas_png.len());
 
             renderer.load_atlas_bytes(&pack.atlas_png, 1024, 1024);
-            
-            // Build dirt mesh
-            self.mesh = Some(Self::build_voxel_mesh(&renderer, &pack, "minecraft:dirt"));
+
+            // Generate and mesh 3x3 chunks
+            let radius = 1;
+            for cx in -radius..=radius {
+                for cz in -radius..=radius {
+                    let chunk = self.world_manager.chunk_manager.get_or_generate(cx, cz);
+                    
+                    let chunk_mesh_data = Mesher::mesh_chunk(chunk, |block_id, face_idx| {
+                        // Very basic mapping based on hardcoded generator IDs (1: stone, 2: dirt, 3: grass_block)
+                        let block_name = match block_id {
+                            1 => "minecraft:stone",
+                            2 => "minecraft:dirt",
+                            3 => "minecraft:grass_block",
+                            _ => "minecraft:dirt", // Fallback
+                        };
+                        if let Some(block_data) = pack.block_dict.get(block_name) {
+                            // Grass block needs top/bottom/side logic, but AssetPack usually handles UV faces.
+                            // In simplified mesher, 0:North, 1:South, 2:East, 3:West, 4:Up, 5:Down
+                            // But Minecraft block models map faces differently. For now we just use face_idx mod len.
+                            let face = &block_data.uv_faces[face_idx % block_data.uv_faces.len()];
+                            [face[0], face[1], face[2], face[3]]
+                        } else {
+                            [0.0, 0.0, 0.0, 0.0]
+                        }
+                    });
+
+                    if chunk_mesh_data.indices.is_empty() { continue; }
+
+                    let mesh = Mesh {
+                        vertex_buffer: renderer.create_vertex_buffer(&chunk_mesh_data.vertices),
+                        index_buffer: renderer.create_index_buffer(&chunk_mesh_data.indices),
+                        index_count: chunk_mesh_data.indices.len() as u32,
+                    };
+
+                    self.chunk_meshes.insert((cx, cz), mesh);
+                }
+            }
         } else {
             log::error!("Failed to load assets.mca! Run asset-cli first.");
         }
@@ -124,10 +107,12 @@ impl EngineApp for MinecrustClient {
     fn on_update(&mut self, dt: f64) {
         self.time += dt;
         
-        // Orbit camera
-        let radius = 3.0;
-        self.camera.eye.x = (self.time.cos() * radius) as f32;
-        self.camera.eye.z = (self.time.sin() * radius) as f32;
+        // Orbit camera around chunk origin
+        let radius = 60.0;
+        self.camera.eye.x = 8.0 + (self.time.cos() * radius) as f32;
+        self.camera.eye.z = 8.0 + (self.time.sin() * radius) as f32;
+        self.camera.eye.y = 40.0;
+        self.camera.target = glam::Vec3::new(8.0, 10.0, 8.0);
         self.camera_uniform.update_view_proj(&self.camera);
         
         if let Some(renderer) = &mut self.renderer {
@@ -137,13 +122,14 @@ impl EngineApp for MinecrustClient {
 
     fn on_render(&mut self) {
         if let Some(renderer) = &mut self.renderer {
-            if let Some(mesh) = &self.mesh {
-                match renderer.draw_mesh(&mesh.vertex_buffer, &mesh.index_buffer, mesh.index_count) {
-                    Ok(_) => {}
-                    Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size),
-                    Err(wgpu::SurfaceError::OutOfMemory) => log::error!("Out of memory!"),
-                    Err(e) => log::error!("{:?}", e),
-                }
+            let meshes_iter = self.chunk_meshes.values()
+                .map(|m| (&m.vertex_buffer, &m.index_buffer, m.index_count));
+                
+            match renderer.draw_meshes(meshes_iter) {
+                Ok(_) => {}
+                Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size),
+                Err(wgpu::SurfaceError::OutOfMemory) => log::error!("Out of memory!"),
+                Err(e) => log::error!("{:?}", e),
             }
         }
     }

@@ -12,5 +12,5 @@ log = "0.4.29"
 minecrust-engine = { version = "0.1.0", path = "../minecrust-engine" }
 minecrust-shared = { version = "0.1.0", path = "../minecrust-shared" }
 pollster = "0.4.0"
-wgpu = "0.19.3"
+wgpu = "22.1.0"
 winit = "0.30.13"

@@ -56,6 +56,8 @@ pub struct Renderer {
     
     // Depth buffer
     depth_texture_view: wgpu::TextureView,
+
+    pub ui: crate::ui::EngineUi,
 }
 
 impl Renderer {
@@ -84,6 +86,7 @@ impl Renderer {
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits::default(),
                     label: None,
+                    memory_hints: Default::default(),
                 },
                 None,
             )
@@ -195,10 +198,12 @@ impl Renderer {
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
+            cache: None,
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
                 buffers: &[Vertex::desc()],
+                compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -208,6 +213,7 @@ impl Renderer {
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -233,6 +239,14 @@ impl Renderer {
             multiview: None,
         });
 
+        let ui = crate::ui::EngineUi::new(
+            &device,
+            config.format,
+            None, // No depth testing for UI
+            1,
+            window.clone(),
+        );
+
         Self {
             surface,
             device,
@@ -245,6 +259,7 @@ impl Renderer {
             atlas_bind_group: None,
             atlas_bind_group_layout,
             depth_texture_view,
+            ui,
         }
     }
 
@@ -355,22 +370,34 @@ impl Renderer {
         })
     }
 
-    pub fn draw_meshes<'a>(
+    pub fn draw<'a>(
         &mut self,
+        window: &winit::window::Window,
         meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32)>,
+        ui_builder: impl FnOnce(&egui::Context),
     ) -> Result<(), wgpu::SurfaceError> {
-        if self.atlas_bind_group.is_none() {
-            return Ok(()); // Nothing to draw if no atlas
-        }
-
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let raw_input = self.ui.state.take_egui_input(window);
+        self.ui.context.begin_pass(raw_input);
+
+        ui_builder(&self.ui.context);
+
+        let full_output = self.ui.context.end_pass();
+        self.ui.state.handle_platform_output(window, full_output.platform_output);
+
+        let tris = self.ui.context.tessellate(full_output.shapes, full_output.pixels_per_point);
+        for (id, delta) in &full_output.textures_delta.set {
+            self.ui.renderer.update_texture(&self.device, &self.queue, *id, delta);
+        }
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
 
-        {
+        // 1. Draw 3D world
+        if self.atlas_bind_group.is_some() {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -407,6 +434,43 @@ impl Renderer {
                 render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..index_count, 0, 0..1);
             }
+        }
+
+        // 2. Draw UI
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: window.scale_factor() as f32,
+        };
+        
+        self.ui.renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &tris,
+            &screen_descriptor,
+        );
+
+        {
+            let mut ui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("UI Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load, // Overlay over 3D world
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None, // No depth testing for UI
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            }).forget_lifetime();
+
+            self.ui.renderer.render(&mut ui_pass, &tris, &screen_descriptor);
+        }
+
+        for id in &full_output.textures_delta.free {
+            self.ui.renderer.free_texture(id);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

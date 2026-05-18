@@ -28,6 +28,14 @@ struct MinecrustClient {
     
     // Player State
     player: PlayerController,
+
+    // UI State
+    is_ui_open: bool,
+
+    // Settings
+    render_distance: i32,
+    vsync: bool,
+    fullscreen: bool,
 }
 
 impl MinecrustClient {
@@ -50,6 +58,10 @@ impl MinecrustClient {
             time: 0.0,
             asset_pack: None,
             player: PlayerController::new(glam::Vec3::new(8.0, 60.0, 8.0)),
+            is_ui_open: false,
+            render_distance: 4,
+            vsync: true,
+            fullscreen: false,
         }
     }
 }
@@ -87,14 +99,16 @@ impl EngineApp for MinecrustClient {
     fn on_update(&mut self, dt: f64) {
         self.time += dt;
 
-        // Update player logic (physics, input, flying)
-        self.player.update(&mut self.input_manager, &mut self.world_manager, dt, self.time);
+        // Only update player logic if UI is not open
+        if !self.is_ui_open {
+            self.player.update(&mut self.input_manager, &mut self.world_manager, dt, self.time);
+        }
 
         // Dynamic Chunk Loading
         let player_cx = (self.player.position.x / minecrust_engine::world::chunk::CHUNK_WIDTH as f32).floor() as i32;
         let player_cz = (self.player.position.z / minecrust_engine::world::chunk::CHUNK_DEPTH as f32).floor() as i32;
         
-        let render_distance = 4;
+        let render_distance = self.render_distance;
         let mut expected_chunks = std::collections::HashSet::new();
         
         for cx in (player_cx - render_distance)..=(player_cx + render_distance) {
@@ -166,24 +180,85 @@ impl EngineApp for MinecrustClient {
     }
 
     fn on_keyboard(&mut self, key: Key, state: ElementState) {
-        self.input_manager.set_key(key, state == ElementState::Pressed);
+        if key == Key::Named(NamedKey::Escape) && state == ElementState::Pressed {
+            self.is_ui_open = !self.is_ui_open;
+        }
+
+        if !self.is_ui_open {
+            self.input_manager.set_key(key, state == ElementState::Pressed);
+        }
     }
 
     fn on_mouse_move(&mut self, dx: f64, dy: f64) {
-        self.input_manager.add_mouse_delta(dx, dy);
+        if !self.is_ui_open {
+            self.input_manager.add_mouse_delta(dx, dy);
+        }
     }
 
-    fn on_render(&mut self) {
+    fn on_render(&mut self, window: &Window) {
+        if self.is_ui_open {
+            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+            window.set_cursor_visible(true);
+        } else {
+            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+            window.set_cursor_visible(false);
+        }
+
+        let is_ui_open = self.is_ui_open;
+        let mut new_vsync = self.vsync;
+        let mut new_fullscreen = self.fullscreen;
+        let mut new_render_distance = self.render_distance;
+        let mut exit_requested = false;
+
         if let Some(renderer) = &mut self.renderer {
             let meshes_iter = self.chunk_meshes.values()
                 .map(|m| (&m.vertex_buffer, &m.index_buffer, m.index_count));
                 
-            match renderer.draw_meshes(meshes_iter) {
+            match renderer.draw(window, meshes_iter, |ctx| {
+                if is_ui_open {
+                    minecrust_engine::egui::Window::new("Settings").show(ctx, |ui| {
+                        ui.heading("Minecrust Settings");
+                        ui.separator();
+                        
+                        ui.add(minecrust_engine::egui::Slider::new(&mut new_render_distance, 1..=16).text("Render Distance"));
+                        ui.checkbox(&mut new_vsync, "VSync");
+                        ui.checkbox(&mut new_fullscreen, "Fullscreen");
+
+                        ui.separator();
+                        if ui.button("Exit Game").clicked() {
+                            exit_requested = true;
+                        }
+                    });
+                }
+            }) {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size),
                 Err(wgpu::SurfaceError::OutOfMemory) => log::error!("Out of memory!"),
                 Err(e) => log::error!("{:?}", e),
             }
+        }
+
+        // Apply changes
+        if new_fullscreen != self.fullscreen {
+            self.fullscreen = new_fullscreen;
+            if self.fullscreen {
+                window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(None)));
+            } else {
+                window.set_fullscreen(None);
+            }
+        }
+
+        if new_vsync != self.vsync {
+            self.vsync = new_vsync;
+            // TODO: Update renderer vsync config
+        }
+
+        self.render_distance = new_render_distance;
+
+        // Note: Actual winit event loop exit isn't directly exposed here,
+        // but we could set a flag and handle it.
+        if exit_requested {
+            std::process::exit(0); // Quick hack to exit since we don't have event_loop ref here
         }
     }
 
@@ -192,6 +267,16 @@ impl EngineApp for MinecrustClient {
         if let Some(renderer) = &mut self.renderer {
             renderer.resize(winit::dpi::PhysicalSize::new(width, height));
         }
+    }
+
+    fn on_window_event(&mut self, window: &Window, event: &winit::event::WindowEvent) -> bool {
+        if let Some(renderer) = &mut self.renderer {
+            let consumed = renderer.ui.on_window_event(window, event);
+            if self.is_ui_open {
+                return consumed;
+            }
+        }
+        false
     }
 }
 

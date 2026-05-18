@@ -20,7 +20,8 @@ pub struct IntegratedServer {
     tx: Option<Sender<ServerMessage>>,
     
     // Multiplayer (laminar) Mode
-    laminar_socket: Option<laminar::Socket>,
+    laminar_sender: Option<Sender<Packet>>,
+    laminar_receiver: Option<Receiver<SocketEvent>>,
     clients: HashMap<SocketAddr, u32>,          // maps address to player Entity ID
     client_usernames: HashMap<SocketAddr, String>, // maps address to username
     next_entity_id: u32,
@@ -41,13 +42,21 @@ impl IntegratedServer {
         thread::Builder::new()
             .name("IntegratedServer".to_string())
             .spawn(move || {
-                let mut laminar_socket = None;
+                let mut laminar_sender = None;
+                let mut laminar_receiver = None;
                 if let Some(addr) = bind_addr {
                     info!("Binding laminar server to {:?}", addr);
                     match Socket::bind(addr) {
                         Ok(mut socket) => {
-                            let _polling_handle = socket.start_polling();
-                            laminar_socket = Some(socket);
+                            let bound_addr = socket.local_addr().unwrap_or(addr);
+                            let bound_port = bound_addr.port();
+                            
+                            laminar_sender = Some(socket.get_packet_sender());
+                            laminar_receiver = Some(socket.get_event_receiver());
+                            
+                            thread::spawn(move || {
+                                socket.start_polling();
+                            });
                             
                             // Start LAN Discovery broadcaster thread
                             thread::spawn(move || {
@@ -75,9 +84,10 @@ impl IntegratedServer {
                                     "127.0.0.1".to_string()
                                 };
                                 
-                                let message = format!("[MOTD]Minecrust LAN World[/MOTD][AD]{}:25565[/AD]", local_ip);
-                                info!("LAN Discovery Broadcaster active on port 44452 for address {}", local_ip);
+                                let message = format!("[MOTD]Minecrust LAN World[/MOTD][AD]{}:{}[/AD]", local_ip, bound_port);
+                                info!("LAN Discovery Broadcaster active! Announcing {}:{}", local_ip, bound_port);
                                 loop {
+                                    info!("Broadcasting LAN Discovery to 255.255.255.255:44452 and 224.0.2.60:44452");
                                     let _ = udp.send_to(message.as_bytes(), "255.255.255.255:44452");
                                     let _ = udp.send_to(message.as_bytes(), "224.0.2.60:44452");
                                     thread::sleep(Duration::from_millis(1500));
@@ -93,9 +103,10 @@ impl IntegratedServer {
                 let mut server = Self {
                     world_manager: WorldManager::new(seed),
                     generator: Arc::new(WorldGenerator::new(seed)),
-                    rx: if laminar_socket.is_none() { Some(server_rx) } else { None },
-                    tx: if laminar_socket.is_none() { Some(server_tx) } else { None },
-                    laminar_socket,
+                    rx: if laminar_sender.is_none() { Some(server_rx) } else { None },
+                    tx: if laminar_sender.is_none() { Some(server_tx) } else { None },
+                    laminar_sender,
+                    laminar_receiver,
                     clients: HashMap::new(),
                     client_usernames: HashMap::new(),
                     next_entity_id: 1,
@@ -130,8 +141,7 @@ impl IntegratedServer {
             }
 
             // 2. Process Multiplayer laminar socket events
-            if let Some(ref socket) = self.laminar_socket {
-                let event_receiver = socket.get_event_receiver();
+            if let Some(event_receiver) = self.laminar_receiver.clone() {
                 while let Ok(event) = event_receiver.try_recv() {
                     match event {
                         SocketEvent::Packet(packet) => {
@@ -243,7 +253,7 @@ impl IntegratedServer {
             ClientMessage::RequestChunk { cx, cz } => {
                 // For safety, per-connection chunk requesting
                 let generator = Arc::clone(&self.generator);
-                let socket_sender = self.laminar_socket.as_ref().unwrap().get_packet_sender();
+                let socket_sender = self.laminar_sender.as_ref().unwrap().clone();
                 
                 thread::spawn(move || {
                     let chunk = generator.generate_chunk(cx, cz);
@@ -290,14 +300,14 @@ impl IntegratedServer {
 
     // --- Helper Network Senders ---
     fn send_to_client(&mut self, addr: SocketAddr, msg: ServerMessage, channel_id: u8) {
-        if let Some(ref socket) = self.laminar_socket {
+        if let Some(ref sender) = self.laminar_sender {
             let payload = bincode::serialize(&msg).unwrap();
             let packet = if channel_id == 0 {
                 Packet::reliable_ordered(addr, payload, Some(0))
             } else {
                 Packet::unreliable_sequenced(addr, payload, Some(1))
             };
-            let _ = socket.get_packet_sender().send(packet);
+            let _ = sender.send(packet);
         }
     }
 

@@ -59,7 +59,11 @@ impl MinecrustApp {
 
 impl EngineApp for MinecrustApp {
     fn on_init(&mut self, window: Arc<Window>) {
-        env_logger::init();
+        let mut builder = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+        builder.filter_module("wgpu_core", log::LevelFilter::Warn);
+        builder.filter_module("wgpu_hal", log::LevelFilter::Warn);
+        builder.filter_module("naga", log::LevelFilter::Warn);
+        let _ = builder.try_init();
         log::info!("Initializing Minecrust Client...");
 
         let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
@@ -277,8 +281,8 @@ impl EngineApp for MinecrustApp {
                     }
                 }
                 ui::MultiplayerAction::HostLan => {
-                    log::info!("Hosting LAN multiplayer server on port 25565...");
-                    let bind_addr = "0.0.0.0:25565".parse::<std::net::SocketAddr>().unwrap();
+                    log::info!("Hosting LAN multiplayer server on random port...");
+                    let bind_addr = "0.0.0.0:0".parse::<std::net::SocketAddr>().unwrap();
                     let (server_tx, server_rx) = minecrust_server::IntegratedServer::start(12345, Some(bind_addr));
                     let mut new_game = GameSession::new(server_tx, server_rx);
                     new_game.asset_pack = self.game.asset_pack.take();

@@ -24,3 +24,8 @@ clean:
 	cargo clean
 	@echo "=> 删除处理过的资产缓存..."
 	rm -rf ./assets/processed/*
+
+# 纯启动服务端 (Dedicated Server)
+run-server:
+	@echo "=> 启动 Minecrust 纯服务端..."
+	cargo run --bin minecrust-server

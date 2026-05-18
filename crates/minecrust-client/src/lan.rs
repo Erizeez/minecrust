@@ -110,7 +110,12 @@ pub fn connect_multiplayer(
     let mut socket = Socket::bind("0.0.0.0:0")?;
     let packet_sender = socket.get_packet_sender();
     let event_receiver = socket.get_event_receiver();
-    let _polling_handle = socket.start_polling();
+    thread::Builder::new()
+        .name("LaminarPolling".to_string())
+        .spawn(move || {
+            socket.start_polling();
+        })
+        .unwrap();
 
     let (client_tx, server_rx) = crossbeam_channel::unbounded::<ClientMessage>();
     let (server_tx, client_rx) = crossbeam_channel::unbounded::<ServerMessage>();

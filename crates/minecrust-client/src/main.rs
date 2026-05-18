@@ -16,6 +16,14 @@ struct Mesh {
     index_count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppState {
+    MainMenu,
+    Settings { from_in_game: bool },
+    InGame,
+    InGameMenu,
+}
+
 struct MinecrustClient {
     renderer: Option<Renderer>,
     camera: Camera,
@@ -30,7 +38,7 @@ struct MinecrustClient {
     player: PlayerController,
 
     // UI State
-    is_ui_open: bool,
+    state: AppState,
 
     // Settings
     render_distance: i32,
@@ -58,7 +66,7 @@ impl MinecrustClient {
             time: 0.0,
             asset_pack: None,
             player: PlayerController::new(glam::Vec3::new(8.0, 60.0, 8.0)),
-            is_ui_open: false,
+            state: AppState::MainMenu,
             render_distance: 4,
             vsync: true,
             fullscreen: false,
@@ -99,8 +107,9 @@ impl EngineApp for MinecrustClient {
     fn on_update(&mut self, dt: f64) {
         self.time += dt;
 
-        // Only update player logic if UI is not open
-        if !self.is_ui_open {
+        let in_game_play = self.state == AppState::InGame;
+
+        if in_game_play {
             self.player.update(&mut self.input_manager, &mut self.world_manager, dt, self.time);
         }
 
@@ -168,9 +177,22 @@ impl EngineApp for MinecrustClient {
         }
 
         // Update Camera Eye and Target
-        let (eye, target) = self.player.get_camera_vectors();
-        self.camera.eye = eye;
-        self.camera.target = target;
+        match self.state {
+            AppState::InGame | AppState::InGameMenu | AppState::Settings { from_in_game: true } => {
+                let (eye, target) = self.player.get_camera_vectors();
+                self.camera.eye = eye;
+                self.camera.target = target;
+            }
+            AppState::MainMenu | AppState::Settings { from_in_game: false } => {
+                // Orbit camera slowly
+                let radius = 50.0;
+                let center = glam::Vec3::new(8.0, 60.0, 8.0);
+                let speed = 0.05;
+                let angle = self.time as f32 * speed;
+                self.camera.eye = center + glam::Vec3::new(angle.cos() * radius, 20.0, angle.sin() * radius);
+                self.camera.target = center;
+            }
+        }
         
         self.camera_uniform.update_view_proj(&self.camera);
         
@@ -181,30 +203,40 @@ impl EngineApp for MinecrustClient {
 
     fn on_keyboard(&mut self, key: Key, state: ElementState) {
         if key == Key::Named(NamedKey::Escape) && state == ElementState::Pressed {
-            self.is_ui_open = !self.is_ui_open;
+            match self.state {
+                AppState::InGame => self.state = AppState::InGameMenu,
+                AppState::InGameMenu => self.state = AppState::InGame,
+                AppState::Settings { from_in_game } => {
+                    self.state = if from_in_game { AppState::InGameMenu } else { AppState::MainMenu };
+                }
+                AppState::MainMenu => {} // Do nothing
+            }
         }
 
-        if !self.is_ui_open {
+        if self.state == AppState::InGame {
             self.input_manager.set_key(key, state == ElementState::Pressed);
         }
     }
 
     fn on_mouse_move(&mut self, dx: f64, dy: f64) {
-        if !self.is_ui_open {
+        if self.state == AppState::InGame {
             self.input_manager.add_mouse_delta(dx, dy);
         }
     }
 
     fn on_render(&mut self, window: &Window) {
-        if self.is_ui_open {
-            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
-            window.set_cursor_visible(true);
-        } else {
+        let in_game = self.state == AppState::InGame;
+        
+        if in_game {
             let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked);
             window.set_cursor_visible(false);
+        } else {
+            let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+            window.set_cursor_visible(true);
         }
 
-        let is_ui_open = self.is_ui_open;
+        let current_state = self.state;
+        let mut next_state = current_state;
         let mut new_vsync = self.vsync;
         let mut new_fullscreen = self.fullscreen;
         let mut new_render_distance = self.render_distance;
@@ -215,20 +247,75 @@ impl EngineApp for MinecrustClient {
                 .map(|m| (&m.vertex_buffer, &m.index_buffer, m.index_count));
                 
             match renderer.draw(window, meshes_iter, |ctx| {
-                if is_ui_open {
-                    minecrust_engine::egui::Window::new("Settings").show(ctx, |ui| {
-                        ui.heading("Minecrust Settings");
-                        ui.separator();
-                        
-                        ui.add(minecrust_engine::egui::Slider::new(&mut new_render_distance, 1..=16).text("Render Distance"));
-                        ui.checkbox(&mut new_vsync, "VSync");
-                        ui.checkbox(&mut new_fullscreen, "Fullscreen");
-
-                        ui.separator();
-                        if ui.button("Exit Game").clicked() {
-                            exit_requested = true;
-                        }
-                    });
+                if !in_game {
+                    minecrust_engine::egui::CentralPanel::default()
+                        .frame(minecrust_engine::egui::Frame::default().fill(minecrust_engine::egui::Color32::from_black_alpha(150)))
+                        .show(ctx, |ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(50.0);
+                                
+                                match current_state {
+                                    AppState::MainMenu => {
+                                        ui.heading(minecrust_engine::egui::RichText::new("MINECRUST").size(60.0).strong());
+                                        ui.add_space(50.0);
+                                        
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new("Singleplayer")).clicked() {
+                                            next_state = AppState::InGame;
+                                        }
+                                        ui.add_space(10.0);
+                                        ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new("Multiplayer (WIP)"));
+                                        ui.add_space(10.0);
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new("Settings")).clicked() {
+                                            next_state = AppState::Settings { from_in_game: false };
+                                        }
+                                        ui.add_space(10.0);
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new("Quit Game")).clicked() {
+                                            exit_requested = true;
+                                        }
+                                    }
+                                    AppState::InGameMenu => {
+                                        ui.heading(minecrust_engine::egui::RichText::new("Game Menu").size(40.0).strong());
+                                        ui.add_space(50.0);
+                                        
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new("Back to Game")).clicked() {
+                                            next_state = AppState::InGame;
+                                        }
+                                        ui.add_space(10.0);
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new("Settings")).clicked() {
+                                            next_state = AppState::Settings { from_in_game: true };
+                                        }
+                                        ui.add_space(10.0);
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new("Save and Quit to Title")).clicked() {
+                                            next_state = AppState::MainMenu;
+                                        }
+                                    }
+                                    AppState::Settings { from_in_game } => {
+                                        ui.heading(minecrust_engine::egui::RichText::new("Settings").size(40.0).strong());
+                                        ui.add_space(50.0);
+                                        
+                                        ui.add_sized([200.0, 40.0], minecrust_engine::egui::Slider::new(&mut new_render_distance, 1..=16).text("Render Distance"));
+                                        ui.add_space(10.0);
+                                        
+                                        let vsync_text = if new_vsync { "VSync: ON" } else { "VSync: OFF" };
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new(vsync_text)).clicked() {
+                                            new_vsync = !new_vsync;
+                                        }
+                                        ui.add_space(10.0);
+                                        
+                                        let fs_text = if new_fullscreen { "Fullscreen: ON" } else { "Fullscreen: OFF" };
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new(fs_text)).clicked() {
+                                            new_fullscreen = !new_fullscreen;
+                                        }
+                                        ui.add_space(30.0);
+                                        
+                                        if ui.add_sized([200.0, 40.0], minecrust_engine::egui::Button::new("Done")).clicked() {
+                                            next_state = if from_in_game { AppState::InGameMenu } else { AppState::MainMenu };
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            });
+                        });
                 }
             }) {
                 Ok(_) => {}
@@ -254,6 +341,7 @@ impl EngineApp for MinecrustClient {
         }
 
         self.render_distance = new_render_distance;
+        self.state = next_state;
 
         // Note: Actual winit event loop exit isn't directly exposed here,
         // but we could set a flag and handle it.
@@ -272,7 +360,7 @@ impl EngineApp for MinecrustClient {
     fn on_window_event(&mut self, window: &Window, event: &winit::event::WindowEvent) -> bool {
         if let Some(renderer) = &mut self.renderer {
             let consumed = renderer.ui.on_window_event(window, event);
-            if self.is_ui_open {
+            if self.state != AppState::InGame {
                 return consumed;
             }
         }

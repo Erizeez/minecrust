@@ -1,5 +1,5 @@
 use crate::renderer::Vertex;
-use crate::world::chunk::{Chunk, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, MAX_Y, MIN_Y};
+use crate::world::{Chunk, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_WIDTH, MAX_Y, MIN_Y};
 use glam::Vec3;
 
 pub struct ChunkMesh {

@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     MainMenu,
+    MultiplayerMenu,
     Settings { from_in_game: bool },
     InGame,
     InGameMenu,

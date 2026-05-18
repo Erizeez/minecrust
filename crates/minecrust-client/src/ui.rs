@@ -2,12 +2,22 @@ use crate::state::{AppState, AppSettings};
 use crate::lang::LangManager;
 use minecrust_engine::egui::{self, Color32, Frame, RichText};
 
+#[derive(Debug, Clone)]
+pub enum MultiplayerAction {
+    JoinSingleplayer,
+    JoinAddress(String),
+    HostLan,
+}
+
 /// Renders the UI and returns true if the application should exit.
 pub fn render_menus(
     ctx: &egui::Context,
     state: &mut AppState,
     settings: &mut AppSettings,
     lang: &LangManager,
+    discoverer: &crate::lan::LanServerDiscoverer,
+    connect_addr: &mut String,
+    action_trigger: &mut Option<MultiplayerAction>,
 ) -> bool {
     let mut exit_requested = false;
     let current_state = *state;
@@ -16,25 +26,82 @@ pub fn render_menus(
         .frame(Frame::default().fill(Color32::from_black_alpha(150)))
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
-                ui.add_space(50.0);
+                ui.add_space(30.0);
 
                 match current_state {
                     AppState::MainMenu => {
                         ui.heading(RichText::new("MINECRUST").size(60.0).strong());
                         ui.add_space(50.0);
 
-                        if ui.add_sized([200.0, 40.0], egui::Button::new(lang.get("menu.singleplayer"))).clicked() {
-                            *state = AppState::InGame;
+                        if ui.add_sized([220.0, 40.0], egui::Button::new(lang.get("menu.singleplayer"))).clicked() {
+                            *action_trigger = Some(MultiplayerAction::JoinSingleplayer);
                         }
                         ui.add_space(10.0);
-                        ui.add_sized([200.0, 40.0], egui::Button::new(format!("{} (WIP)", lang.get("menu.multiplayer"))));
+                        
+                        if ui.add_sized([220.0, 40.0], egui::Button::new(lang.get("menu.multiplayer"))).clicked() {
+                            *state = AppState::MultiplayerMenu;
+                        }
                         ui.add_space(10.0);
-                        if ui.add_sized([200.0, 40.0], egui::Button::new(lang.get("menu.options"))).clicked() {
+                        
+                        if ui.add_sized([220.0, 40.0], egui::Button::new(lang.get("menu.options"))).clicked() {
                             *state = AppState::Settings { from_in_game: false };
                         }
                         ui.add_space(10.0);
-                        if ui.add_sized([200.0, 40.0], egui::Button::new(lang.get("menu.quit"))).clicked() {
+                        
+                        if ui.add_sized([220.0, 40.0], egui::Button::new(lang.get("menu.quit"))).clicked() {
                             exit_requested = true;
+                        }
+                    }
+                    AppState::MultiplayerMenu => {
+                        ui.heading(RichText::new(lang.get("menu.multiplayer")).size(40.0).strong());
+                        ui.add_space(20.0);
+
+                        // Direct Connect input
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 150.0);
+                            ui.label("服务器地址:");
+                            ui.add(egui::TextEdit::singleline(connect_addr).desired_width(180.0));
+                        });
+                        ui.add_space(10.0);
+
+                        ui.horizontal(|ui| {
+                            ui.add_space(ui.available_width() / 2.0 - 155.0);
+                            if ui.add_sized([150.0, 36.0], egui::Button::new("🔍 直连加入")).clicked() {
+                                if !connect_addr.trim().is_empty() {
+                                    *action_trigger = Some(MultiplayerAction::JoinAddress(connect_addr.clone()));
+                                }
+                            }
+                            if ui.add_sized([150.0, 36.0], egui::Button::new("🌐 开启局域网主机")).clicked() {
+                                *action_trigger = Some(MultiplayerAction::HostLan);
+                            }
+                        });
+                        ui.add_space(30.0);
+
+                        // LAN Servers List
+                        ui.label(RichText::new("=== 局域网活动服务器 ===").size(20.0).strong().color(Color32::LIGHT_GREEN));
+                        ui.add_space(10.0);
+
+                        let servers = discoverer.get_servers();
+                        if servers.is_empty() {
+                            ui.label(RichText::new("正在搜寻局域网世界...").italics().color(Color32::GRAY));
+                        } else {
+                            egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                                for srv in servers {
+                                    ui.horizontal(|ui| {
+                                        ui.add_space(ui.available_width() / 2.0 - 200.0);
+                                        let btn_label = format!("🎮 {} [{}]", srv.motd, srv.address);
+                                        if ui.add_sized([400.0, 32.0], egui::Button::new(btn_label)).clicked() {
+                                            *action_trigger = Some(MultiplayerAction::JoinAddress(srv.address));
+                                        }
+                                    });
+                                    ui.add_space(5.0);
+                                }
+                            });
+                        }
+
+                        ui.add_space(40.0);
+                        if ui.add_sized([200.0, 40.0], egui::Button::new("返回主菜单")).clicked() {
+                            *state = AppState::MainMenu;
                         }
                     }
                     AppState::InGameMenu => {
@@ -55,7 +122,7 @@ pub fn render_menus(
                     }
                     AppState::Settings { from_in_game } => {
                         ui.heading(RichText::new(lang.get("menu.options")).size(40.0).strong());
-                        ui.add_space(50.0);
+                        ui.add_space(30.0);
 
                         ui.add_sized(
                             [200.0, 40.0],
@@ -110,7 +177,7 @@ pub fn render_menus(
                             };
                         }
                     }
-                    _ => {}
+                    AppState::InGame => {}
                 }
             });
         });

@@ -25,10 +25,13 @@ pub struct MinecrustApp {
     audio: AudioManager,
     lang: LangManager,
     loader: AssetLoader,
+    lan_discoverer: crate::lan::LanServerDiscoverer,
+    connect_addr: String,
 }
 
 impl MinecrustApp {
     pub fn new() -> Self {
+        let (server_tx, server_rx) = minecrust_server::IntegratedServer::start(12345, None);
         Self {
             renderer: None,
             camera: Camera {
@@ -44,10 +47,12 @@ impl MinecrustApp {
             time: 0.0,
             state: AppState::MainMenu,
             settings: AppSettings::default(),
-            game: GameSession::new(),
+            game: GameSession::new(server_tx, server_rx),
             audio: AudioManager::new(),
             lang: LangManager::new(),
             loader: AssetLoader::new(),
+            lan_discoverer: crate::lan::LanServerDiscoverer::new(),
+            connect_addr: "127.0.0.1:25565".to_string(),
         }
     }
 }
@@ -153,7 +158,7 @@ impl EngineApp for MinecrustApp {
                 self.camera.eye = eye;
                 self.camera.target = target;
             }
-            AppState::MainMenu | AppState::Settings { from_in_game: false } => {
+            AppState::MainMenu | AppState::MultiplayerMenu | AppState::Settings { from_in_game: false } => {
                 let radius = 50.0;
                 let center = glam::Vec3::new(8.0, 60.0, 8.0);
                 let speed = 0.05;
@@ -183,6 +188,7 @@ impl EngineApp for MinecrustApp {
                     }
                 }
                 AppState::MainMenu => AppState::MainMenu,
+                AppState::MultiplayerMenu => AppState::MainMenu,
             };
             self.transition_state(next_state);
         }
@@ -215,19 +221,70 @@ impl EngineApp for MinecrustApp {
         let mut new_fullscreen = self.settings.fullscreen;
         let prev_lang = self.settings.language.clone();
 
+        let mut action_trigger = None;
+
         if let Some(renderer) = &mut self.renderer {
-            let meshes_iter = self.game.chunk_meshes.values()
+            let chunk_meshes = self.game.chunk_meshes.values()
                 .map(|m| (&m.vertex_buffer, &m.index_buffer, m.index_count));
+            let steve_meshes = self.game.other_players.values()
+                .filter_map(|p| p.mesh.as_ref())
+                .map(|m| (&m.vertex_buffer, &m.index_buffer, m.index_count));
+            let meshes_iter = chunk_meshes.chain(steve_meshes);
 
             match renderer.draw(window, meshes_iter, |ctx| {
                 if !in_game {
-                    exit_requested = ui::render_menus(ctx, &mut self.state, &mut self.settings, &self.lang);
+                    exit_requested = ui::render_menus(
+                        ctx,
+                        &mut self.state,
+                        &mut self.settings,
+                        &self.lang,
+                        &self.lan_discoverer,
+                        &mut self.connect_addr,
+                        &mut action_trigger,
+                    );
                 }
             }) {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => renderer.resize(renderer.size),
                 Err(wgpu::SurfaceError::OutOfMemory) => log::error!("Out of memory!"),
                 Err(e) => log::error!("{:?}", e),
+            }
+        }
+
+        if let Some(action) = action_trigger {
+            match action {
+                ui::MultiplayerAction::JoinSingleplayer => {
+                    log::info!("Starting game in singleplayer mode...");
+                    let (server_tx, server_rx) = minecrust_server::IntegratedServer::start(12345, None);
+                    let mut new_game = GameSession::new(server_tx, server_rx);
+                    new_game.asset_pack = self.game.asset_pack.take();
+                    self.game = new_game;
+                    self.transition_state(AppState::InGame);
+                }
+                ui::MultiplayerAction::JoinAddress(addr_str) => {
+                    if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
+                        log::info!("Connecting to multiplayer server: {}...", addr);
+                        if let Ok((server_tx, server_rx)) = crate::lan::connect_multiplayer(addr, "Player".to_string()) {
+                            let mut new_game = GameSession::new(server_tx, server_rx);
+                            new_game.asset_pack = self.game.asset_pack.take();
+                            self.game = new_game;
+                            self.transition_state(AppState::InGame);
+                        } else {
+                            log::error!("Failed to connect to {}", addr);
+                        }
+                    } else {
+                        log::error!("Invalid socket address format: {}", addr_str);
+                    }
+                }
+                ui::MultiplayerAction::HostLan => {
+                    log::info!("Hosting LAN multiplayer server on port 25565...");
+                    let bind_addr = "0.0.0.0:25565".parse::<std::net::SocketAddr>().unwrap();
+                    let (server_tx, server_rx) = minecrust_server::IntegratedServer::start(12345, Some(bind_addr));
+                    let mut new_game = GameSession::new(server_tx, server_rx);
+                    new_game.asset_pack = self.game.asset_pack.take();
+                    self.game = new_game;
+                    self.transition_state(AppState::InGame);
+                }
             }
         }
 

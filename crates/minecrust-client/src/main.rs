@@ -4,6 +4,8 @@ pub mod game;
 pub mod lang;
 pub mod state;
 pub mod ui;
+pub mod lan;
+pub mod steve;
 
 use app::MinecrustApp;
 use minecrust_engine::EngineRunner;

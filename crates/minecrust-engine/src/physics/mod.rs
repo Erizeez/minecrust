@@ -85,7 +85,7 @@ impl PhysicsManager {
 
     /// Checks if the given AABB intersects with any solid block in the world.
     fn check_aabb_collision(world: &mut WorldManager, aabb: &AABB) -> bool {
-        use crate::world::chunk::{CHUNK_WIDTH, CHUNK_DEPTH};
+        use crate::world::{CHUNK_WIDTH, CHUNK_DEPTH};
 
         let min_x = aabb.min.x.floor() as i32;
         let max_x = aabb.max.x.floor() as i32;

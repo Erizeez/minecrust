@@ -1,10 +1,8 @@
-pub mod chunk;
-pub mod generator;
 pub mod mesher;
 pub mod player;
 
-pub use chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_VOLUME, MIN_Y, MAX_Y};
-pub use generator::WorldGenerator;
+pub use minecrust_shared::world::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_VOLUME, MIN_Y, MAX_Y};
+pub use minecrust_shared::world::generator::WorldGenerator;
 pub use mesher::{Mesher, ChunkMesh};
 
 use std::collections::HashMap;

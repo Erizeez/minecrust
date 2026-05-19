@@ -1,7 +1,8 @@
 use hecs::{World, Entity};
 use minecrust_shared::ecs::player::{Player, CameraMode};
-use minecrust_shared::ecs::transform::LocalTransform;
-use minecrust_shared::ecs::animation::Animator;
+use minecrust_shared::ecs::transform::{LocalTransform, Children};
+use minecrust_shared::ecs::animation::{Animator, Bone, BoneType};
+use minecrust_shared::ecs::mesh::Mesh;
 use crate::input::InputManager;
 use crate::physics::{PhysicsManager, AABB};
 use crate::world::ChunkManager;
@@ -23,7 +24,9 @@ pub fn player_movement_system(
 ) {
     let dt_f32 = dt as f32;
 
-    for (entity, player, transform, mut animator_opt) in world.query_mut::<(Entity, &mut Player, &mut LocalTransform, Option<&mut Animator>)>() {
+    let mut player_camera_modes = Vec::new();
+
+    for (entity, mut player, mut transform, mut animator_opt) in world.query_mut::<(Entity, &mut Player, &mut LocalTransform, Option<&mut Animator>)>() {
         // 1. Double tap Space to toggle flying
         if input.is_key_just_pressed(&Key::Named(NamedKey::Space)) {
             if time - player.last_space_press < DOUBLE_TAP_TIME {
@@ -126,7 +129,36 @@ pub fn player_movement_system(
                 animator.speed = lateral_speed / WALK_SPEED;
             }
         }
+        
+        player_camera_modes.push((entity, player.camera_mode));
     }
+    
+    // Update local player bone visibility based on camera mode
+    for (entity, mode) in player_camera_modes {
+        if let Ok(children) = world.get::<&Children>(entity) {
+            let child_entities = children.0.clone();
+            drop(children); // release the borrow on world
+
+            for child in child_entities {
+                let mut is_visible = true;
+                if let Ok(bone) = world.get::<&Bone>(child) {
+                    if mode == CameraMode::FirstPerson {
+                        match bone.bone_type {
+                            BoneType::Head | BoneType::Body | BoneType::LeftLeg | BoneType::RightLeg => {
+                                is_visible = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                
+                if let Ok(mut mesh) = world.get::<&mut Mesh>(child) {
+                    mesh.visible = is_visible;
+                }
+            }
+        }
+    }
+    
     input.clear_frame_state();
 }
 

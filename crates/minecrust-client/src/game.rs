@@ -10,6 +10,7 @@ use minecrust_engine::systems::transform::transform_update_system;
 use minecrust_engine::systems::animation::procedural_animation_system;
 use minecrust_shared::AssetPack;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender};
 use log::{info, warn};
 
@@ -32,7 +33,7 @@ pub struct GameSession {
     pub local_player_entity: hecs::Entity,
     pub input_manager: InputManager,
     pub chunk_meshes: HashMap<(i32, i32), Mesh>,
-    pub asset_pack: Option<AssetPack>,
+    pub asset_pack: Option<Arc<AssetPack>>,
     pub other_players: HashMap<u32, RemotePlayer>,
     pub local_player_mesh: Option<Mesh>,
     
@@ -41,112 +42,20 @@ pub struct GameSession {
     server_rx: Receiver<ServerMessage>,
     sent_requests: HashSet<(i32, i32)>,
     joined: bool,
+    
+    // Async Meshing
+    mesh_tx: Sender<((i32, i32), minecrust_engine::world::ChunkMesh)>,
+    mesh_rx: Receiver<((i32, i32), minecrust_engine::world::ChunkMesh)>,
+    meshing_chunks: HashSet<(i32, i32)>,
 }
 
 impl GameSession {
     pub fn new(server_tx: Sender<ClientMessage>, server_rx: Receiver<ServerMessage>) -> Self {
         let mut world_manager = WorldManager::new(12345);
         
-        let local_player_entity = world_manager.ecs.spawn((
-            Player::new(),
-            LocalTransform {
-                translation: glam::Vec3::new(8.0, 60.0, 8.0),
-                rotation: glam::Quat::IDENTITY,
-                scale: glam::Vec3::ONE,
-            },
-            GlobalTransform(glam::Mat4::IDENTITY),
-            Animator {
-                walk_timer: 0.0,
-                speed: 0.0,
-                body_yaw: 0.0,
-                head_yaw: 0.0,
-                head_pitch: 0.0,
-            },
-            Children(Vec::new()), // Will be populated with bones
-        ));
+        let local_player_entity = minecrust_engine::world::prefab::spawn_steve(&mut world_manager.ecs, glam::Vec3::new(8.0, 60.0, 8.0));
 
-        // Spawn bones
-        let head = world_manager.ecs.spawn((
-            Bone { bone_type: BoneType::Head },
-            LocalTransform {
-                translation: glam::Vec3::new(0.0, 1.5, 0.0), // relative to player base
-                rotation: glam::Quat::IDENTITY,
-                scale: glam::Vec3::ONE,
-            },
-            GlobalTransform(glam::Mat4::IDENTITY),
-            Parent(local_player_entity),
-            EcsMesh::new("steve_head"),
-        ));
-
-        let body = world_manager.ecs.spawn((
-            Bone { bone_type: BoneType::Body },
-            LocalTransform {
-                translation: glam::Vec3::new(0.0, 0.75, 0.0),
-                rotation: glam::Quat::IDENTITY,
-                scale: glam::Vec3::ONE,
-            },
-            GlobalTransform(glam::Mat4::IDENTITY),
-            Parent(local_player_entity),
-            EcsMesh::new("steve_body"),
-        ));
-
-        let right_arm = world_manager.ecs.spawn((
-            Bone { bone_type: BoneType::RightArm },
-            LocalTransform {
-                translation: glam::Vec3::new(0.375, 1.375, 0.0),
-                rotation: glam::Quat::IDENTITY,
-                scale: glam::Vec3::ONE,
-            },
-            GlobalTransform(glam::Mat4::IDENTITY),
-            Parent(local_player_entity),
-            EcsMesh::new("steve_right_arm"),
-        ));
-
-        let left_arm = world_manager.ecs.spawn((
-            Bone { bone_type: BoneType::LeftArm },
-            LocalTransform {
-                translation: glam::Vec3::new(-0.375, 1.375, 0.0),
-                rotation: glam::Quat::IDENTITY,
-                scale: glam::Vec3::ONE,
-            },
-            GlobalTransform(glam::Mat4::IDENTITY),
-            Parent(local_player_entity),
-            EcsMesh::new("steve_left_arm"),
-        ));
-
-        let right_leg = world_manager.ecs.spawn((
-            Bone { bone_type: BoneType::RightLeg },
-            LocalTransform {
-                translation: glam::Vec3::new(0.125, 0.75, 0.0),
-                rotation: glam::Quat::IDENTITY,
-                scale: glam::Vec3::ONE,
-            },
-            GlobalTransform(glam::Mat4::IDENTITY),
-            Parent(local_player_entity),
-            EcsMesh::new("steve_right_leg"),
-        ));
-
-        let left_leg = world_manager.ecs.spawn((
-            Bone { bone_type: BoneType::LeftLeg },
-            LocalTransform {
-                translation: glam::Vec3::new(-0.125, 0.75, 0.0),
-                rotation: glam::Quat::IDENTITY,
-                scale: glam::Vec3::ONE,
-            },
-            GlobalTransform(glam::Mat4::IDENTITY),
-            Parent(local_player_entity),
-            EcsMesh::new("steve_left_leg"),
-        ));
-
-        // Add children to player
-        if let Ok(mut children) = world_manager.ecs.get::<&mut Children>(local_player_entity) {
-            children.0.push(head);
-            children.0.push(body);
-            children.0.push(right_arm);
-            children.0.push(left_arm);
-            children.0.push(right_leg);
-            children.0.push(left_leg);
-        }
+        let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded();
 
         let mut session = Self {
             world_manager,
@@ -160,6 +69,9 @@ impl GameSession {
             server_rx,
             sent_requests: HashSet::new(),
             joined: false,
+            mesh_tx,
+            mesh_rx,
+            meshing_chunks: HashSet::new(),
         };
 
         // Send a join request immediately on session startup
@@ -228,50 +140,66 @@ impl GameSession {
             }
         }
 
-        // 4. Mesh newly loaded chunks that have been sent by the server
+        // Process completed async meshes
+        if let Some(renderer) = renderer {
+            while let Ok((pos, chunk_mesh_data)) = self.mesh_rx.try_recv() {
+                self.meshing_chunks.remove(&pos);
+                if expected_chunks.contains(&pos) {
+                    if !chunk_mesh_data.indices.is_empty() {
+                        let mesh = Mesh {
+                            vertex_buffer: renderer.create_vertex_buffer(&chunk_mesh_data.vertices),
+                            index_buffer: renderer.create_index_buffer(&chunk_mesh_data.indices),
+                            index_count: chunk_mesh_data.indices.len() as u32,
+                        };
+                        self.chunk_meshes.insert(pos, mesh);
+                    } else {
+                        let mesh = Mesh {
+                            vertex_buffer: renderer.create_vertex_buffer(&[]),
+                            index_buffer: renderer.create_index_buffer(&[]),
+                            index_count: 0,
+                        };
+                        self.chunk_meshes.insert(pos, mesh);
+                    }
+                }
+            }
+        }
+
+        // 4. Queue unmeshed chunks for background processing
         if let (Some(renderer), Some(pack)) = (renderer, &self.asset_pack) {
-            for pos in expected_chunks {
-                if !self.chunk_meshes.contains_key(&pos) {
-                    // Check if chunk is loaded locally (sent from server)
+            for &pos in &expected_chunks {
+                if !self.chunk_meshes.contains_key(&pos) && !self.meshing_chunks.contains(&pos) {
                     if let Some(chunk) = self.world_manager.chunk_manager.chunks.get(&pos) {
-                        let chunk_mesh_data = Mesher::mesh_chunk(chunk, |block_id, face_idx| {
-                            let block_name = match block_id {
-                                1 => "minecraft:stone",
-                                2 => "minecraft:dirt",
-                                3 => "minecraft:grass_block",
-                                _ => "minecraft:dirt",
-                            };
-                            let color = if block_id == 3 && face_idx == 4 {
-                                // Grass block Top
-                                [0.44, 0.70, 0.33] // Plains green tint
-                            } else {
-                                [1.0, 1.0, 1.0]
-                            };
+                        self.meshing_chunks.insert(pos);
+                        
+                        let chunk_clone = chunk.clone();
+                        let pack_clone = Arc::clone(pack);
+                        let mesh_tx_clone = self.mesh_tx.clone();
+                        
+                        self.world_manager.task_pool.spawn(move || {
+                            let chunk_mesh_data = Mesher::mesh_chunk(&chunk_clone, |block_id, face_idx| {
+                                let block_name = match block_id {
+                                    1 => "minecraft:stone",
+                                    2 => "minecraft:dirt",
+                                    3 => "minecraft:grass_block",
+                                    _ => "minecraft:dirt",
+                                };
+                                let color = if block_id == 3 && face_idx == 4 {
+                                    // Grass block Top
+                                    [0.44, 0.70, 0.33] // Plains green tint
+                                } else {
+                                    [1.0, 1.0, 1.0]
+                                };
 
-                            if let Some(block_data) = pack.block_dict.get(block_name) {
-                                let face = &block_data.uv_faces[face_idx % block_data.uv_faces.len()];
-                                ([face[0], face[1], face[2], face[3]], color)
-                            } else {
-                                ([0.0, 0.0, 0.0, 0.0], color)
-                            }
+                                if let Some(block_data) = pack_clone.block_dict.get(block_name) {
+                                    let face = &block_data.uv_faces[face_idx % block_data.uv_faces.len()];
+                                    ([face[0], face[1], face[2], face[3]], color)
+                                } else {
+                                    ([0.0, 0.0, 0.0, 0.0], color)
+                                }
+                            });
+                            
+                            let _ = mesh_tx_clone.send((pos, chunk_mesh_data));
                         });
-
-                        if !chunk_mesh_data.indices.is_empty() {
-                            let mesh = Mesh {
-                                vertex_buffer: renderer.create_vertex_buffer(&chunk_mesh_data.vertices),
-                                index_buffer: renderer.create_index_buffer(&chunk_mesh_data.indices),
-                                index_count: chunk_mesh_data.indices.len() as u32,
-                            };
-                            self.chunk_meshes.insert(pos, mesh);
-                        } else {
-                            // Insert an empty mesh to mark it as loaded so we don't try again
-                            let mesh = Mesh {
-                                vertex_buffer: renderer.create_vertex_buffer(&[]),
-                                index_buffer: renderer.create_index_buffer(&[]),
-                                index_count: 0,
-                            };
-                            self.chunk_meshes.insert(pos, mesh);
-                        }
                     }
                 }
             }

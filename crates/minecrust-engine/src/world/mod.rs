@@ -1,16 +1,20 @@
 pub mod mesher;
+pub mod prefab;
 
 pub use minecrust_shared::world::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_VOLUME, MIN_Y, MAX_Y};
 pub use minecrust_shared::world::generator::WorldGenerator;
 pub use mesher::{Mesher, ChunkMesh};
 
 use std::collections::HashMap;
+use crate::core::TaskPool;
+use std::sync::Arc;
 
 // World Subsystem skeleton
 // This will encapsulate hecs::World and System dispatching
 pub struct WorldManager {
     pub ecs: hecs::World,
     pub chunk_manager: ChunkManager,
+    pub task_pool: Arc<TaskPool>,
 }
 
 impl WorldManager {
@@ -18,6 +22,7 @@ impl WorldManager {
         Self {
             ecs: hecs::World::new(),
             chunk_manager: ChunkManager::new(seed),
+            task_pool: Arc::new(TaskPool::default()),
         }
     }
 }

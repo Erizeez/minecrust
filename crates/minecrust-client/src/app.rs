@@ -29,7 +29,6 @@ pub struct MinecrustApp {
     connect_addr: String,
     main_menu_steve: Option<crate::game::Mesh>,
     main_menu_alex: Option<crate::game::Mesh>,
-    entity_meshes: Option<crate::entity_meshes::EntityMeshes>,
 }
 
 impl MinecrustApp {
@@ -58,7 +57,6 @@ impl MinecrustApp {
             connect_addr: "127.0.0.1:25565".to_string(),
             main_menu_steve: None,
             main_menu_alex: None,
-            entity_meshes: None,
         }
     }
 }
@@ -102,8 +100,23 @@ impl EngineApp for MinecrustApp {
                 index_count: alex_i.len() as u32,
             });
 
-            self.entity_meshes = Some(crate::entity_meshes::EntityMeshes::new(&renderer.device, &pack, self.settings.player_model));
-            self.game.asset_pack = Some(pack);
+            let arc_pack = Arc::new(pack);
+            
+            let bones = [
+                "steve_head", "steve_body", "steve_right_arm", "steve_left_arm", "steve_right_leg", "steve_left_leg",
+            ];
+            for bone in bones {
+                let (vertices, indices) = crate::steve::build_steve_bone_vertices(&arc_pack, self.settings.player_model, bone);
+                let v_buf = renderer.create_vertex_buffer(&vertices);
+                let i_buf = renderer.create_index_buffer(&indices);
+                renderer.mesh_registry.insert(bone.to_string(), Arc::new(minecrust_engine::renderer::RenderMesh {
+                    vertex_buffer: v_buf,
+                    index_buffer: i_buf,
+                    index_count: indices.len() as u32,
+                }));
+            }
+            
+            self.game.asset_pack = Some(arc_pack);
         } else {
             log::error!("Failed to load assets.mca! Run asset-cli first.");
         }
@@ -275,36 +288,23 @@ impl EngineApp for MinecrustApp {
                 for m in self.game.chunk_meshes.values() {
                     all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
                 }
+            }
+            
+            let mut extra_entities = Vec::new();
+            if self.state != AppState::MainMenu {
                 for p in self.game.other_players.values() {
                     if let Some(m) = &p.mesh {
-                        all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
-                    }
-                }
-            }
-
-            let mut ecs_draw_calls = Vec::new();
-            let mut ecs_transforms = Vec::new();
-            if self.state != AppState::MainMenu {
-                let is_first_person = if let Ok(player) = self.game.world_manager.ecs.get::<&minecrust_shared::ecs::player::Player>(self.game.local_player_entity) {
-                    player.camera_mode == minecrust_shared::ecs::player::CameraMode::FirstPerson
-                } else { false };
-
-                if !is_first_person {
-                    if let Some(em) = &self.entity_meshes {
-                        for (mesh, global_transform) in self.game.world_manager.ecs.query_mut::<(&minecrust_shared::ecs::mesh::Mesh, &minecrust_shared::ecs::transform::GlobalTransform)>() {
-                            if let Some((v, i, count)) = em.meshes.get(&mesh.mesh_id) {
-                                ecs_draw_calls.push((v, i, *count));
-                                ecs_transforms.push(global_transform.0);
-                            }
-                        }
+                        // Needs a transform matrix. For now, use identity since player mesh has position baked in vertices
+                        // Wait, build_steve_vertices bakes position into the vertices. So Mat4::IDENTITY is correct.
+                        extra_entities.push((&m.vertex_buffer, &m.index_buffer, m.index_count, glam::Mat4::IDENTITY));
                     }
                 }
             }
             
-            let ecs_iter = ecs_draw_calls.into_iter().zip(ecs_transforms.iter())
-                .map(|((v, i, count), mat)| (v, i, count, mat));
+            // Map extra_entities to references of Mat4
+            let ref_extra_entities: Vec<_> = extra_entities.iter().map(|(v, i, c, m)| (*v, *i, *c, m)).collect();
 
-            match renderer.draw(window, all_meshes.into_iter(), ecs_iter, |ctx| {
+            match renderer.draw_world(window, &self.game.world_manager.ecs, all_meshes.into_iter(), ref_extra_entities.into_iter(), |ctx| {
                 if !in_game {
                     exit_requested = ui::render_menus(
                         ctx,

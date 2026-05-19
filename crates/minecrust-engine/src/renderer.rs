@@ -11,6 +11,12 @@ pub struct Vertex {
     pub color: [f32; 3],
 }
 
+pub struct RenderMesh {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub index_count: u32,
+}
+
 impl Vertex {
     pub fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
@@ -61,6 +67,8 @@ pub struct Renderer {
     entity_buffer: wgpu::Buffer,
     entity_bind_group: wgpu::BindGroup,
     pub entity_alignment: u32,
+
+    pub mesh_registry: std::collections::HashMap<String, Arc<RenderMesh>>,
 
     pub ui: crate::ui::EngineUi,
 }
@@ -304,6 +312,7 @@ impl Renderer {
             entity_buffer,
             entity_bind_group,
             entity_alignment,
+            mesh_registry: std::collections::HashMap::new(),
             ui,
         }
     }
@@ -415,11 +424,12 @@ impl Renderer {
         })
     }
 
-    pub fn draw<'a>(
+    pub fn draw_world<'a>(
         &mut self,
         window: &winit::window::Window,
+        world: &hecs::World,
         chunk_meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32)>,
-        entity_meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32, &'a glam::Mat4)>,
+        extra_entity_meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32, &'a glam::Mat4)>,
         ui_builder: impl FnOnce(&egui::Context),
     ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -489,8 +499,8 @@ impl Renderer {
                 render_pass.draw_indexed(0..index_count, 0, 0..1);
             }
 
-            // Entities
-            for (vertex_buffer, index_buffer, index_count, model_mat) in entity_meshes {
+            // Extra Entities (e.g., remote players without ECS mesh components)
+            for (vertex_buffer, index_buffer, index_count, model_mat) in extra_entity_meshes {
                 let entity_index = entities_drawn + 1; // 0 is identity
                 if entity_index >= 1024 {
                     break;
@@ -499,14 +509,38 @@ impl Renderer {
                 let offset = entity_index * self.entity_alignment;
                 self.queue.write_buffer(&self.entity_buffer, offset as wgpu::BufferAddress, bytemuck::cast_slice(&[model_mat.to_cols_array_2d()]));
                 
-                entity_draw_calls.push((vertex_buffer, index_buffer, index_count, offset));
+                entity_draw_calls.push((vertex_buffer.slice(..), index_buffer.slice(..), index_count, offset));
+                entities_drawn += 1;
+            }
+
+            // ECS Entities
+            let mut ecs_entities_to_draw = Vec::new();
+            for (mesh_comp, global_transform) in world.query::<(&minecrust_shared::ecs::mesh::Mesh, &minecrust_shared::ecs::transform::GlobalTransform)>().iter() {
+                if !mesh_comp.visible { continue; }
+                if let Some(render_mesh) = self.mesh_registry.get(&mesh_comp.mesh_id) {
+                    ecs_entities_to_draw.push((Arc::clone(render_mesh), global_transform.0));
+                }
+            }
+
+            for (render_mesh, model_mat) in ecs_entities_to_draw {
+                let entity_index = entities_drawn + 1;
+                if entity_index >= 1024 { break; }
+                
+                let offset = entity_index * self.entity_alignment;
+                self.queue.write_buffer(&self.entity_buffer, offset as wgpu::BufferAddress, bytemuck::cast_slice(&[model_mat.to_cols_array_2d()]));
+                
+                render_pass.set_bind_group(2, &self.entity_bind_group, &[offset]);
+                render_pass.set_vertex_buffer(0, render_mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(render_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..render_mesh.index_count, 0, 0..1);
+                
                 entities_drawn += 1;
             }
 
             for (vertex_buffer, index_buffer, index_count, offset) in entity_draw_calls {
                 render_pass.set_bind_group(2, &self.entity_bind_group, &[offset]);
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.set_vertex_buffer(0, vertex_buffer);
+                render_pass.set_index_buffer(index_buffer, wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..index_count, 0, 0..1);
             }
         }

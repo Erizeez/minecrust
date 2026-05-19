@@ -8,8 +8,23 @@ pub fn procedural_animation_system(world: &mut World, dt: f32) {
     let mut animators_to_update = Vec::new();
 
     for (entity, animator, children) in world.query_mut::<(Entity, &mut Animator, &Children)>() {
-        // Step timer based on speed
-        animator.walk_timer += animator.speed * dt * 2.0;
+        if animator.speed > 0.05 {
+            // Walking: Step timer based on speed. Multiplier 15.0 for faster swing speed
+            animator.walk_timer += animator.speed * dt * 15.0; 
+            // Wrap to 0..2PI to prevent large numbers when returning to neutral
+            animator.walk_timer %= 2.0 * PI;
+        } else {
+            // Stopping: smoothly return to neutral state (where sin is 0: either 0 or PI or 2PI)
+            if animator.walk_timer > PI {
+                // Return to 2PI (which is functionally 0)
+                animator.walk_timer += (2.0 * PI - animator.walk_timer) * 10.0 * dt;
+                if animator.walk_timer > 2.0 * PI - 0.01 { animator.walk_timer = 0.0; }
+            } else {
+                // Return to 0
+                animator.walk_timer -= animator.walk_timer * 10.0 * dt;
+                if animator.walk_timer < 0.01 { animator.walk_timer = 0.0; }
+            }
+        }
         
         animators_to_update.push((entity, animator.clone(), children.0.clone()));
     }

@@ -122,8 +122,6 @@ pub fn player_movement_system(
 
             if player.is_flying || !player.is_grounded {
                 animator.speed = 0.0;
-                // Gradually reset walk timer when airborne
-                animator.walk_timer *= 0.9;
             } else {
                 animator.speed = lateral_speed / WALK_SPEED;
             }

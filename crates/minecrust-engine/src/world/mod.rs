@@ -1,5 +1,7 @@
 pub mod mesher;
 pub mod prefab;
+pub mod lod;
+pub mod lod_mesher;
 
 pub use minecrust_shared::world::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_VOLUME, MIN_Y, MAX_Y};
 pub use minecrust_shared::world::generator::WorldGenerator;
@@ -14,6 +16,7 @@ use std::sync::Arc;
 pub struct WorldManager {
     pub ecs: hecs::World,
     pub chunk_manager: ChunkManager,
+    pub lod_manager: lod::LodManager,
     pub task_pool: Arc<TaskPool>,
 }
 
@@ -22,6 +25,7 @@ impl WorldManager {
         Self {
             ecs: hecs::World::new(),
             chunk_manager: ChunkManager::new(seed),
+            lod_manager: lod::LodManager::new(),
             task_pool: Arc::new(TaskPool::default()),
         }
     }

@@ -288,6 +288,9 @@ impl EngineApp for MinecrustApp {
                 for m in self.game.chunk_meshes.values() {
                     all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
                 }
+                for m in self.game.lod_meshes.values() {
+                    all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                }
             }
             
             let mut extra_entities = Vec::new();

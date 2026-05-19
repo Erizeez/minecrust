@@ -8,6 +8,8 @@ use minecrust_shared::ecs::mesh::Mesh as EcsMesh;
 use minecrust_engine::systems::player::player_movement_system;
 use minecrust_engine::systems::transform::transform_update_system;
 use minecrust_engine::systems::animation::procedural_animation_system;
+use minecrust_engine::world::lod::LodGenerator;
+use minecrust_engine::world::lod_mesher::LodMesher;
 use minecrust_shared::AssetPack;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -46,7 +48,13 @@ pub struct GameSession {
     // Async Meshing
     mesh_tx: Sender<((i32, i32), minecrust_engine::world::ChunkMesh)>,
     mesh_rx: Receiver<((i32, i32), minecrust_engine::world::ChunkMesh)>,
-    meshing_chunks: HashSet<(i32, i32)>,
+    pub meshing_chunks: HashSet<(i32, i32)>,
+    
+    // LOD Meshing
+    pub lod_meshes: HashMap<(u8, i32, i32), Mesh>,
+    pub meshing_lods: HashSet<(u8, i32, i32)>,
+    mesh_lod_tx: Sender<((u8, i32, i32), minecrust_engine::world::ChunkMesh)>,
+    mesh_lod_rx: Receiver<((u8, i32, i32), minecrust_engine::world::ChunkMesh)>,
 }
 
 impl GameSession {
@@ -56,6 +64,7 @@ impl GameSession {
         let local_player_entity = minecrust_engine::world::prefab::spawn_steve(&mut world_manager.ecs, glam::Vec3::new(8.0, 60.0, 8.0));
 
         let (mesh_tx, mesh_rx) = crossbeam_channel::unbounded();
+        let (mesh_lod_tx, mesh_lod_rx) = crossbeam_channel::unbounded();
 
         let mut session = Self {
             world_manager,
@@ -72,6 +81,10 @@ impl GameSession {
             mesh_tx,
             mesh_rx,
             meshing_chunks: HashSet::new(),
+            lod_meshes: HashMap::new(),
+            meshing_lods: HashSet::new(),
+            mesh_lod_tx,
+            mesh_lod_rx,
         };
 
         // Send a join request immediately on session startup
@@ -127,7 +140,34 @@ impl GameSession {
             }
         }
 
-        // Unload old chunk meshes and local chunks
+        let mut expected_lods = HashSet::new();
+        for level in 1..4 {
+            let range = render_distance * (level as i32 + 1);
+            for cx in (player_cx - range)..=(player_cx + range) {
+                for cz in (player_cz - range)..=(player_cz + range) {
+                    if !expected_chunks.contains(&(cx, cz)) {
+                        expected_lods.insert((level as u8, cx, cz));
+                    }
+                }
+            }
+        }
+
+        // Receive LOD meshes
+        if let Some(renderer) = renderer {
+            while let Ok((pos, chunk_mesh_data)) = self.mesh_lod_rx.try_recv() {
+                self.meshing_lods.remove(&pos);
+                if !chunk_mesh_data.indices.is_empty() {
+                    let mesh = Mesh {
+                        vertex_buffer: renderer.create_vertex_buffer(&chunk_mesh_data.vertices),
+                        index_buffer: renderer.create_index_buffer(&chunk_mesh_data.indices),
+                        index_count: chunk_mesh_data.indices.len() as u32,
+                    };
+                    self.lod_meshes.insert(pos, mesh);
+                }
+            }
+        }
+
+        // 3. Unload out-of-range chunks meshes and local chunks
         self.chunk_meshes.retain(|pos, _| expected_chunks.contains(pos));
         self.world_manager.chunk_manager.chunks.retain(|pos, _| expected_chunks.contains(pos));
         self.sent_requests.retain(|pos| expected_chunks.contains(pos));
@@ -161,6 +201,13 @@ impl GameSession {
                         self.chunk_meshes.insert(pos, mesh);
                     }
                 }
+            }
+        }
+        
+        let current_lods: Vec<_> = self.lod_meshes.keys().cloned().collect();
+        for pos in current_lods {
+            if !expected_lods.contains(&pos) {
+                self.lod_meshes.remove(&pos);
             }
         }
 
@@ -219,8 +266,35 @@ impl GameSession {
                     }
                 }
             }
+            
+            // 4c. Generate LOD meshes
+            let generator = self.world_manager.chunk_manager.generator.clone();
+            
+            // Get center of stone texture to avoid atlas sampling bleed on LODs
+            let mut stone_uv_center = [0.0, 0.0];
+            if let Some(pack) = &self.asset_pack {
+                if let Some(block_data) = pack.block_dict.get("minecraft:stone") {
+                    if !block_data.uv_faces.is_empty() {
+                        let face = &block_data.uv_faces[0];
+                        // center point: u0 + (u1 - u0)/2, v0 + (v1 - v0)/2
+                        stone_uv_center = [(face[0] + face[2]) / 2.0, (face[1] + face[3]) / 2.0];
+                    }
+                }
+            }
 
-
+            for &pos in &expected_lods {
+                if !self.lod_meshes.contains_key(&pos) && !self.meshing_lods.contains(&pos) {
+                    self.meshing_lods.insert(pos);
+                    let mesh_lod_tx_clone = self.mesh_lod_tx.clone();
+                    let gen_clone = generator.clone();
+                    self.world_manager.task_pool.spawn(move || {
+                        let (level, tx, tz) = pos;
+                        let tile_data = LodGenerator::generate_procedural(level, tx, tz, &gen_clone);
+                        let mesh_data = LodMesher::mesh_tile(&tile_data, stone_uv_center);
+                        let _ = mesh_lod_tx_clone.send((pos, mesh_data));
+                    });
+                }
+            }
         }
     }
 

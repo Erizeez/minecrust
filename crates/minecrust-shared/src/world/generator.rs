@@ -1,6 +1,7 @@
 use crate::world::chunk::{Chunk, CHUNK_DEPTH, CHUNK_WIDTH, MIN_Y};
 use noise::{NoiseFn, Simplex};
 
+#[derive(Clone)]
 pub struct WorldGenerator {
     simplex: Simplex,
 }
@@ -10,6 +11,19 @@ impl WorldGenerator {
         Self {
             simplex: Simplex::new(seed),
         }
+    }
+    
+    pub fn get_surface_height(&self, world_x: f64, world_z: f64) -> i32 {
+        let scale = 0.02;
+        let noise_val = self.simplex.get([world_x * scale, world_z * scale]);
+        (noise_val * 20.0 + 10.0) as i32
+    }
+    
+    pub fn get_surface_block(&self, world_x: f64, world_z: f64) -> (i32, u16) {
+        let height = self.get_surface_height(world_x, world_z);
+        // Match chunk generation logic: top block is currently always grass (3)
+        // If mountain biomes are added later, adjust this to match `generate_chunk`
+        (height, 3)
     }
 
     pub fn generate_chunk(&self, chunk_x: i32, chunk_z: i32) -> Chunk {
@@ -26,12 +40,7 @@ impl WorldGenerator {
                 let world_x = (chunk_x * CHUNK_WIDTH as i32 + x as i32) as f64;
                 let world_z = (chunk_z * CHUNK_DEPTH as i32 + z as i32) as f64;
 
-                // Scale for noise
-                let scale = 0.02;
-                let noise_val = self.simplex.get([world_x * scale, world_z * scale]);
-                
-                // Map noise [-1, 1] to height [-10, 30]
-                let height = (noise_val * 20.0 + 10.0) as i32;
+                let height = self.get_surface_height(world_x, world_z);
 
                 // Fill columns
                 for y in MIN_Y..=height {

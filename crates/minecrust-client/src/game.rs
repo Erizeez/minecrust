@@ -18,26 +18,22 @@ use log::{info, warn};
 
 use minecrust_shared::protocol::{ClientMessage, ServerMessage};
 
-pub struct Mesh {
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
-    pub index_count: u32,
-}
+use minecrust_engine::renderer::RenderMesh;
 
 pub struct RemotePlayer {
     pub username: String,
     pub position: glam::Vec3,
-    pub mesh: Option<Mesh>,
+    pub mesh: Option<RenderMesh>,
 }
 
 pub struct GameSession {
     pub world_manager: WorldManager,
     pub local_player_entity: hecs::Entity,
     pub input_manager: InputManager,
-    pub chunk_meshes: HashMap<(i32, i32), Mesh>,
+    pub chunk_meshes: HashMap<(i32, i32), RenderMesh>,
     pub asset_pack: Option<Arc<AssetPack>>,
     pub other_players: HashMap<u32, RemotePlayer>,
-    pub local_player_mesh: Option<Mesh>,
+    pub local_player_mesh: Option<RenderMesh>,
     
     // C/S Channels
     server_tx: Sender<ClientMessage>,
@@ -51,7 +47,7 @@ pub struct GameSession {
     pub meshing_chunks: HashSet<(i32, i32)>,
     
     // LOD Meshing
-    pub lod_meshes: HashMap<(u8, i32, i32), Mesh>,
+    pub lod_meshes: HashMap<(u8, i32, i32), RenderMesh>,
     pub meshing_lods: HashSet<(u8, i32, i32)>,
     mesh_lod_tx: Sender<((u8, i32, i32), minecrust_engine::world::ChunkMesh)>,
     mesh_lod_rx: Receiver<((u8, i32, i32), minecrust_engine::world::ChunkMesh)>,
@@ -157,11 +153,7 @@ impl GameSession {
             while let Ok((pos, chunk_mesh_data)) = self.mesh_lod_rx.try_recv() {
                 self.meshing_lods.remove(&pos);
                 if !chunk_mesh_data.indices.is_empty() {
-                    let mesh = Mesh {
-                        vertex_buffer: renderer.create_vertex_buffer(&chunk_mesh_data.vertices),
-                        index_buffer: renderer.create_index_buffer(&chunk_mesh_data.indices),
-                        index_count: chunk_mesh_data.indices.len() as u32,
-                    };
+                    let mesh = renderer.create_render_mesh(&chunk_mesh_data.vertices, &chunk_mesh_data.indices);
                     self.lod_meshes.insert(pos, mesh);
                 }
             }
@@ -186,18 +178,10 @@ impl GameSession {
                 self.meshing_chunks.remove(&pos);
                 if expected_chunks.contains(&pos) {
                     if !chunk_mesh_data.indices.is_empty() {
-                        let mesh = Mesh {
-                            vertex_buffer: renderer.create_vertex_buffer(&chunk_mesh_data.vertices),
-                            index_buffer: renderer.create_index_buffer(&chunk_mesh_data.indices),
-                            index_count: chunk_mesh_data.indices.len() as u32,
-                        };
+                        let mesh = renderer.create_render_mesh(&chunk_mesh_data.vertices, &chunk_mesh_data.indices);
                         self.chunk_meshes.insert(pos, mesh);
                     } else {
-                        let mesh = Mesh {
-                            vertex_buffer: renderer.create_vertex_buffer(&[]),
-                            index_buffer: renderer.create_index_buffer(&[]),
-                            index_count: 0,
-                        };
+                        let mesh = renderer.create_render_mesh(&[], &[]);
                         self.chunk_meshes.insert(pos, mesh);
                     }
                 }
@@ -257,11 +241,7 @@ impl GameSession {
                     let model_type = if id % 2 == 0 { crate::steve::PlayerModelType::Steve } else { crate::steve::PlayerModelType::Alex };
                     let (vertices, indices) = crate::steve::build_steve_vertices(player.position, pack, model_type);
                     if !indices.is_empty() {
-                        let mesh = Mesh {
-                            vertex_buffer: renderer.create_vertex_buffer(&vertices),
-                            index_buffer: renderer.create_index_buffer(&indices),
-                            index_count: indices.len() as u32,
-                        };
+                        let mesh = renderer.create_render_mesh(&vertices, &indices);
                         player.mesh = Some(mesh);
                     }
                 }

@@ -88,11 +88,23 @@ fn main() -> anyhow::Result<()> {
                         // Strip 'minecraft:block/' prefix if present
                         let tex_path = tex_name.replace("minecraft:", "");
                         let img_path = format!("assets/minecraft/textures/{}.png", tex_path);
+                        let n_img_path = format!("assets/minecraft/textures/{}_n.png", tex_path);
+                        let s_img_path = format!("assets/minecraft/textures/{}_s.png", tex_path);
                         
                         let bytes = extractor.read_file_as_bytes(&img_path)?;
                         let img = image::load_from_memory(&bytes)?.to_rgba8();
                         
-                        let packed_uv = packer.add_texture(tex_name, &img)?;
+                        let n_img = extractor.read_file_as_bytes(&n_img_path)
+                            .ok()
+                            .and_then(|b| image::load_from_memory(&b).ok())
+                            .map(|i| i.to_rgba8());
+                            
+                        let s_img = extractor.read_file_as_bytes(&s_img_path)
+                            .ok()
+                            .and_then(|b| image::load_from_memory(&b).ok())
+                            .map(|i| i.to_rgba8());
+                        
+                        let packed_uv = packer.add_texture(tex_name, &img, n_img.as_ref(), s_img.as_ref())?;
                         uv_faces[i] = [packed_uv.u0, packed_uv.v0, packed_uv.u1, packed_uv.v1];
                     }
                 }
@@ -112,7 +124,7 @@ fn main() -> anyhow::Result<()> {
                         let rgba = img.to_rgba8();
                         // Use the file name as the identifier, e.g., "steve" or "alex"
                         let name = tex_path.split('/').last().unwrap().replace(".png", "");
-                        if let Ok(packed_uv) = packer.add_texture(&name, &rgba) {
+                        if let Ok(packed_uv) = packer.add_texture(&name, &rgba, None, None) {
                             texture_dict.insert(name, [packed_uv.u0, packed_uv.v0, packed_uv.u1, packed_uv.v1]);
                         }
                     }
@@ -127,7 +139,9 @@ fn main() -> anyhow::Result<()> {
 
             let pack = AssetPack {
                 version: "1.21.1-mvp".to_string(),
-                atlas_png: packer.get_canvas_bytes(),
+                atlas_png: packer.get_albedo_bytes(),
+                atlas_normal_png: packer.get_normal_bytes(),
+                atlas_specular_png: packer.get_specular_bytes(),
                 block_dict,
                 texture_dict,
             };

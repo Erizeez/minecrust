@@ -11,7 +11,9 @@ pub struct PackedUV {
 }
 
 pub struct AtlasPacker {
-    canvas: RgbaImage,
+    canvas_albedo: RgbaImage,
+    canvas_normal: RgbaImage,
+    canvas_specular: RgbaImage,
     next_x: u32,
     next_y: u32,
     current_row_height: u32,
@@ -22,7 +24,9 @@ pub struct AtlasPacker {
 impl AtlasPacker {
     pub fn new(canvas_size: u32, tile_size: u32) -> Self {
         Self {
-            canvas: RgbaImage::new(canvas_size, canvas_size),
+            canvas_albedo: RgbaImage::new(canvas_size, canvas_size),
+            canvas_normal: RgbaImage::new(canvas_size, canvas_size),
+            canvas_specular: RgbaImage::new(canvas_size, canvas_size),
             next_x: 0,
             next_y: 0,
             current_row_height: 0,
@@ -31,13 +35,13 @@ impl AtlasPacker {
         }
     }
 
-    pub fn add_texture(&mut self, name: &str, img: &RgbaImage) -> anyhow::Result<&PackedUV> {
+    pub fn add_texture(&mut self, name: &str, albedo: &RgbaImage, normal: Option<&RgbaImage>, specular: Option<&RgbaImage>) -> anyhow::Result<&PackedUV> {
         if self.texture_map.contains_key(name) {
             return Ok(self.texture_map.get(name).unwrap());
         }
 
-        let w = img.width();
-        let h = img.height();
+        let w = albedo.width();
+        let h = albedo.height();
 
         if self.next_x + w > self.canvas_size {
             self.next_x = 0;
@@ -50,7 +54,15 @@ impl AtlasPacker {
         }
 
         // Copy pixels
-        self.canvas.copy_from(img, self.next_x, self.next_y)?;
+        self.canvas_albedo.copy_from(albedo, self.next_x, self.next_y)?;
+
+        let default_normal = RgbaImage::from_pixel(w, h, image::Rgba([128, 128, 255, 255]));
+        let n_img = normal.unwrap_or(&default_normal);
+        self.canvas_normal.copy_from(n_img, self.next_x, self.next_y)?;
+
+        let default_specular = RgbaImage::from_pixel(w, h, image::Rgba([0, 0, 0, 0]));
+        let s_img = specular.unwrap_or(&default_specular);
+        self.canvas_specular.copy_from(s_img, self.next_x, self.next_y)?;
 
         // Calculate UVs (0.0 to 1.0)
         let u0 = self.next_x as f32 / self.canvas_size as f32;
@@ -72,9 +84,9 @@ impl AtlasPacker {
         self.texture_map.get(name)
     }
 
-    pub fn get_canvas_bytes(&self) -> Vec<u8> {
-        self.canvas.to_vec()
-    }
+    pub fn get_albedo_bytes(&self) -> Vec<u8> { self.canvas_albedo.to_vec() }
+    pub fn get_normal_bytes(&self) -> Vec<u8> { self.canvas_normal.to_vec() }
+    pub fn get_specular_bytes(&self) -> Vec<u8> { self.canvas_specular.to_vec() }
 }
 
 #[cfg(test)]
@@ -89,25 +101,25 @@ mod tests {
         let dummy_img2 = RgbaImage::from_pixel(16, 16, image::Rgba([0, 255, 0, 255]));
         let dummy_img3 = RgbaImage::from_pixel(16, 16, image::Rgba([0, 0, 255, 255]));
 
-        let uv1 = packer.add_texture("red", &dummy_img1).unwrap();
+        let uv1 = packer.add_texture("red", &dummy_img1, None, None).unwrap();
         assert_eq!(uv1.u0, 0.0);
         assert_eq!(uv1.v0, 0.0);
         assert_eq!(uv1.u1, 0.5);
         assert_eq!(uv1.v1, 0.5);
 
-        let uv2 = packer.add_texture("green", &dummy_img2).unwrap();
+        let uv2 = packer.add_texture("green", &dummy_img2, None, None).unwrap();
         assert_eq!(uv2.u0, 0.5);
         assert_eq!(uv2.v0, 0.0);
 
-        let uv3 = packer.add_texture("blue", &dummy_img3).unwrap();
+        let uv3 = packer.add_texture("blue", &dummy_img3, None, None).unwrap();
         assert_eq!(uv3.u0, 0.0);
         assert_eq!(uv3.v0, 0.5);
 
         // Test deduplication
-        let uv1_dup = packer.add_texture("red", &dummy_img1).unwrap();
+        let uv1_dup = packer.add_texture("red", &dummy_img1, None, None).unwrap();
         assert_eq!(uv1_dup.u0, 0.0);
         
         // Assert canvas dimensions and raw bytes length (32x32 * 4 channels = 4096 bytes)
-        assert_eq!(packer.get_canvas_bytes().len(), 4096);
+        assert_eq!(packer.get_albedo_bytes().len(), 4096);
     }
 }

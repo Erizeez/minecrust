@@ -10,6 +10,9 @@ pub mod ui;
 pub mod systems;
 pub mod hecs_test;
 
+#[cfg(target_os = "macos")]
+pub mod metal_rt;
+
 // Re-export common types
 pub use egui;
 pub use window::{EngineApp, EngineRunner};

@@ -40,16 +40,23 @@ impl Camera {
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    inv_view_proj: [[f32; 4]; 4],
+    camera_pos: [f32; 4],
 }
 
 impl CameraUniform {
     pub fn new() -> Self {
         Self {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            camera_pos: [0.0; 4],
         }
     }
 
     pub fn update_view_proj(&mut self, camera: &Camera) {
-        self.view_proj = camera.build_view_projection_matrix().to_cols_array_2d();
+        let view_proj = camera.build_view_projection_matrix();
+        self.view_proj = view_proj.to_cols_array_2d();
+        self.inv_view_proj = view_proj.inverse().to_cols_array_2d();
+        self.camera_pos = [camera.eye.x, camera.eye.y, camera.eye.z, 1.0];
     }
 }

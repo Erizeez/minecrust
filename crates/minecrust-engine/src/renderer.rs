@@ -11,10 +11,20 @@ pub struct Vertex {
     pub color: [f32; 3],
 }
 
+#[cfg(target_os = "macos")]
+pub struct BlasWrapper(pub metal::AccelerationStructure);
+
+#[cfg(target_os = "macos")]
+unsafe impl Send for BlasWrapper {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for BlasWrapper {}
+
 pub struct RenderMesh {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
+    #[cfg(target_os = "macos")]
+    pub blas: Option<BlasWrapper>,
 }
 
 impl Vertex {
@@ -60,8 +70,21 @@ pub struct Renderer {
     atlas_bind_group: Option<wgpu::BindGroup>,
     atlas_bind_group_layout: wgpu::BindGroupLayout,
     
+    // G-Buffer
+    pub gbuffer_albedo_tex: wgpu::Texture,
+    pub gbuffer_normal_tex: wgpu::Texture,
+    pub gbuffer_mrao_tex: wgpu::Texture,
+    pub final_rt_output_tex: wgpu::Texture,
+    pub final_rt_output_view: wgpu::TextureView,
+    pub gbuffer_albedo_view: wgpu::TextureView,
+    pub gbuffer_normal_view: wgpu::TextureView,
+    pub gbuffer_mrao_view: wgpu::TextureView,
+    
     // Depth buffer
     depth_texture_view: wgpu::TextureView,
+
+    #[cfg(target_os = "macos")]
+    pub metal_rt_ctx: Option<crate::metal_rt::MetalRtContext>,
 
     // Entities
     entity_buffer: wgpu::Buffer,
@@ -93,10 +116,20 @@ impl Renderer {
             .await
             .unwrap();
 
+        let mut required_features = wgpu::Features::empty();
+        let adapter_features = adapter.features();
+        
+        if adapter_features.contains(wgpu::Features::RAY_TRACING_ACCELERATION_STRUCTURE | wgpu::Features::RAY_QUERY) {
+            log::info!("Hardware Ray Tracing is supported. Enabling...");
+            required_features |= wgpu::Features::RAY_TRACING_ACCELERATION_STRUCTURE | wgpu::Features::RAY_QUERY;
+        } else {
+            log::error!("Hardware Ray Tracing is NOT supported by this adapter! Disabling RT features.");
+        }
+
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    required_features: wgpu::Features::empty(),
+                    required_features,
                     required_limits: wgpu::Limits::default(),
                     label: None,
                     memory_hints: Default::default(),
@@ -104,16 +137,19 @@ impl Renderer {
                 None,
             )
             .await
-            .unwrap();
+            .expect("Failed to create device");
 
         let surface_caps = surface.get_capabilities(&adapter);
+        println!("Surface formats: {:?}", surface_caps.formats);
+        println!("Surface usages: {:?}", surface_caps.usages);
+
         let surface_format = surface_caps.formats.iter()
             .copied()
-            .find(|f| f.is_srgb())
+            .find(|&f| f == wgpu::TextureFormat::Rgba16Float)
             .unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
             format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
@@ -141,6 +177,31 @@ impl Renderer {
             view_formats: &[],
         });
         let depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let create_gbuffer = |label: &str, format: wgpu::TextureFormat| -> (wgpu::Texture, wgpu::TextureView) {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                size: wgpu::Extent3d { width: config.width, height: config.height, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                label: Some(label), view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            (texture, view)
+        };
+
+        let (gbuffer_albedo_tex, gbuffer_albedo_view) = create_gbuffer("GBuffer Albedo", wgpu::TextureFormat::Bgra8UnormSrgb);
+        let (gbuffer_normal_tex, gbuffer_normal_view) = create_gbuffer("GBuffer Normal", wgpu::TextureFormat::Rgba16Float);
+        let (gbuffer_mrao_tex, gbuffer_mrao_view) = create_gbuffer("GBuffer MRAO", wgpu::TextureFormat::Rgba8Unorm);
+        
+        let final_rt_output_tex = device.create_texture(&wgpu::TextureDescriptor {
+            size: wgpu::Extent3d { width: config.width, height: config.height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            label: Some("Final RT Output"),
+            view_formats: &[],
+        });
+        let final_rt_output_view = final_rt_output_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Camera Uniform
         let mut camera_uniform = CameraUniform::new();
@@ -188,6 +249,26 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -258,11 +339,23 @@ impl Renderer {
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                    Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    }),
+                ],
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
@@ -297,6 +390,11 @@ impl Renderer {
             window.clone(),
         );
 
+        #[cfg(target_os = "macos")]
+        let metal_rt_ctx = Some(crate::metal_rt::MetalRtContext::new(&device, &queue));
+        #[cfg(not(target_os = "macos"))]
+        let metal_rt_ctx = None;
+
         Self {
             surface,
             device,
@@ -308,7 +406,16 @@ impl Renderer {
             camera_bind_group,
             atlas_bind_group: None,
             atlas_bind_group_layout,
+            gbuffer_albedo_tex,
+            gbuffer_normal_tex,
+            gbuffer_mrao_tex,
+            final_rt_output_tex,
+            final_rt_output_view,
+            gbuffer_albedo_view,
+            gbuffer_normal_view,
+            gbuffer_mrao_view,
             depth_texture_view,
+            metal_rt_ctx,
             entity_buffer,
             entity_bind_group,
             entity_alignment,
@@ -340,6 +447,39 @@ impl Renderer {
                 view_formats: &[],
             });
             self.depth_texture_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let create_gbuffer = |label: &str, format: wgpu::TextureFormat| -> (wgpu::Texture, wgpu::TextureView) {
+                let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                    size: wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+                    mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                    format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    label: Some(label), view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (texture, view)
+            };
+
+            let (gbuffer_albedo_tex, gbuffer_albedo_view) = create_gbuffer("GBuffer Albedo", wgpu::TextureFormat::Bgra8UnormSrgb);
+            self.gbuffer_albedo_tex = gbuffer_albedo_tex;
+            self.gbuffer_albedo_view = gbuffer_albedo_view;
+
+            let (gbuffer_normal_tex, gbuffer_normal_view) = create_gbuffer("GBuffer Normal", wgpu::TextureFormat::Rgba16Float);
+            self.gbuffer_normal_tex = gbuffer_normal_tex;
+            self.gbuffer_normal_view = gbuffer_normal_view;
+
+            let (gbuffer_mrao_tex, gbuffer_mrao_view) = create_gbuffer("GBuffer MRAO", wgpu::TextureFormat::Rgba8Unorm);
+            self.gbuffer_mrao_tex = gbuffer_mrao_tex;
+            self.gbuffer_mrao_view = gbuffer_mrao_view;
+
+            self.final_rt_output_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                size: wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                label: Some("Final RT Output"),
+                view_formats: &[],
+            });
+            self.final_rt_output_view = self.final_rt_output_tex.create_view(&wgpu::TextureViewDescriptor::default());
         }
     }
 
@@ -347,46 +487,32 @@ impl Renderer {
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[*camera_uniform]));
     }
 
-    pub fn load_atlas_bytes(&mut self, rgba_bytes: &[u8], width: u32, height: u32) {
-        let size = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
+    pub fn load_atlas_bytes(&mut self, albedo_bytes: &[u8], normal_bytes: &[u8], specular_bytes: &[u8], width: u32, height: u32) {
+        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        
+        let create_texture = |label: &str, format: wgpu::TextureFormat, bytes: &[u8]| -> wgpu::TextureView {
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label), size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                format, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+            });
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                bytes,
+                wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
+                size,
+            );
+            texture.create_view(&wgpu::TextureViewDescriptor::default())
         };
 
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Texture Atlas"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let view_albedo = create_texture("Albedo Atlas", wgpu::TextureFormat::Rgba8UnormSrgb, albedo_bytes);
+        let view_normal = create_texture("Normal Atlas", wgpu::TextureFormat::Rgba8Unorm, normal_bytes);
+        let view_specular = create_texture("Specular Atlas", wgpu::TextureFormat::Rgba8Unorm, specular_bytes);
 
-        self.queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            rgba_bytes,
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * width),
-                rows_per_image: Some(height),
-            },
-            size,
-        );
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest, // Nearest for pixel art voxels!
+            mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
@@ -395,14 +521,10 @@ impl Renderer {
         self.atlas_bind_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &self.atlas_bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view_albedo) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view_normal) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view_specular) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
             label: Some("atlas_bind_group"),
         }));
@@ -424,12 +546,41 @@ impl Renderer {
         })
     }
 
+    pub fn create_render_mesh(&self, vertices: &[Vertex], indices: &[u32]) -> RenderMesh {
+        let vertex_buffer = self.create_vertex_buffer(vertices);
+        let index_buffer = self.create_index_buffer(indices);
+        
+        #[cfg(target_os = "macos")]
+        let blas = {
+            if let Some(metal_rt) = &self.metal_rt_ctx {
+                let mtl_vb = unsafe { crate::metal_rt::MetalRtContext::extract_buffer(&vertex_buffer) };
+                let mtl_ib = unsafe { crate::metal_rt::MetalRtContext::extract_buffer(&index_buffer) };
+                Some(BlasWrapper(metal_rt.build_blas(
+                    &mtl_vb,
+                    std::mem::size_of::<Vertex>() as u64,
+                    &mtl_ib,
+                    indices.len() as u32,
+                )))
+            } else {
+                None
+            }
+        };
+
+        RenderMesh {
+            vertex_buffer,
+            index_buffer,
+            index_count: indices.len() as u32,
+            #[cfg(target_os = "macos")]
+            blas,
+        }
+    }
+
     pub fn draw_world<'a>(
         &mut self,
         window: &winit::window::Window,
         world: &hecs::World,
-        chunk_meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32)>,
-        extra_entity_meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32, &'a glam::Mat4)>,
+        chunk_meshes: impl Iterator<Item = &'a RenderMesh>,
+        extra_entity_meshes: impl Iterator<Item = (&'a RenderMesh, &'a glam::Mat4)>,
         ui_builder: impl FnOnce(&egui::Context),
     ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -452,23 +603,21 @@ impl Renderer {
             label: Some("Render Encoder"),
         });
 
+        #[cfg(target_os = "macos")]
+        let mut tlas_instances = Vec::new();
+        #[cfg(target_os = "macos")]
+        let mut tlas_blas_owned = Vec::new();
+
         // 1. Draw 3D world
         if self.atlas_bind_group.is_some() {
+            let clear_op = wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 100.0 / 255.0,
-                            g: 149.0 / 255.0,
-                            b: 237.0 / 255.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment { view: &self.gbuffer_albedo_view, resolve_target: None, ops: clear_op }),
+                    Some(wgpu::RenderPassColorAttachment { view: &self.gbuffer_normal_view, resolve_target: None, ops: clear_op }),
+                    Some(wgpu::RenderPassColorAttachment { view: &self.gbuffer_mrao_view, resolve_target: None, ops: clear_op }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth_texture_view,
                     depth_ops: Some(wgpu::Operations {
@@ -493,14 +642,33 @@ impl Renderer {
             self.queue.write_buffer(&self.entity_buffer, 0, bytemuck::cast_slice(&[glam::Mat4::IDENTITY.to_cols_array_2d()]));
             render_pass.set_bind_group(2, &self.entity_bind_group, &[0]);
 
-            for (vertex_buffer, index_buffer, index_count) in chunk_meshes {
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..index_count, 0, 0..1);
+            for render_mesh in chunk_meshes {
+                render_pass.set_vertex_buffer(0, render_mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(render_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..render_mesh.index_count, 0, 0..1);
+                
+                #[cfg(target_os = "macos")]
+                if let Some(blas) = &render_mesh.blas {
+                    let cols = glam::Mat4::IDENTITY.to_cols_array_2d();
+                    let transform = [
+                        [cols[0][0], cols[0][1], cols[0][2]],
+                        [cols[1][0], cols[1][1], cols[1][2]],
+                        [cols[2][0], cols[2][1], cols[2][2]],
+                        [cols[3][0], cols[3][1], cols[3][2]],
+                    ];
+                    tlas_instances.push(metal::MTLAccelerationStructureInstanceDescriptor {
+                        transformation_matrix: transform,
+                        options: metal::MTLAccelerationStructureInstanceOptions::Opaque,
+                        mask: 0xFF,
+                        intersection_function_table_offset: 0,
+                        acceleration_structure_index: tlas_blas_owned.len() as u32,
+                    });
+                    tlas_blas_owned.push(blas.0.clone());
+                }
             }
 
             // Extra Entities (e.g., remote players without ECS mesh components)
-            for (vertex_buffer, index_buffer, index_count, model_mat) in extra_entity_meshes {
+            for (render_mesh, model_mat) in extra_entity_meshes {
                 let entity_index = entities_drawn + 1; // 0 is identity
                 if entity_index >= 1024 {
                     break;
@@ -509,8 +677,27 @@ impl Renderer {
                 let offset = entity_index * self.entity_alignment;
                 self.queue.write_buffer(&self.entity_buffer, offset as wgpu::BufferAddress, bytemuck::cast_slice(&[model_mat.to_cols_array_2d()]));
                 
-                entity_draw_calls.push((vertex_buffer.slice(..), index_buffer.slice(..), index_count, offset));
+                entity_draw_calls.push((&render_mesh.vertex_buffer, &render_mesh.index_buffer, render_mesh.index_count, offset));
                 entities_drawn += 1;
+
+                #[cfg(target_os = "macos")]
+                if let Some(blas) = &render_mesh.blas {
+                    let cols = model_mat.to_cols_array_2d();
+                    let transform = [
+                        [cols[0][0], cols[0][1], cols[0][2]],
+                        [cols[1][0], cols[1][1], cols[1][2]],
+                        [cols[2][0], cols[2][1], cols[2][2]],
+                        [cols[3][0], cols[3][1], cols[3][2]],
+                    ];
+                    tlas_instances.push(metal::MTLAccelerationStructureInstanceDescriptor {
+                        transformation_matrix: transform,
+                        options: metal::MTLAccelerationStructureInstanceOptions::Opaque,
+                        mask: 0xFF,
+                        intersection_function_table_offset: 0,
+                        acceleration_structure_index: tlas_blas_owned.len() as u32,
+                    });
+                    tlas_blas_owned.push(blas.0.clone());
+                }
             }
 
             // ECS Entities
@@ -535,15 +722,86 @@ impl Renderer {
                 render_pass.draw_indexed(0..render_mesh.index_count, 0, 0..1);
                 
                 entities_drawn += 1;
+
+                #[cfg(target_os = "macos")]
+                if let Some(blas) = &render_mesh.blas {
+                    let cols = model_mat.to_cols_array_2d();
+                    let transform = [
+                        [cols[0][0], cols[0][1], cols[0][2]],
+                        [cols[1][0], cols[1][1], cols[1][2]],
+                        [cols[2][0], cols[2][1], cols[2][2]],
+                        [cols[3][0], cols[3][1], cols[3][2]],
+                    ];
+                    tlas_instances.push(metal::MTLAccelerationStructureInstanceDescriptor {
+                        transformation_matrix: transform,
+                        options: metal::MTLAccelerationStructureInstanceOptions::Opaque,
+                        mask: 0xFF,
+                        intersection_function_table_offset: 0,
+                        acceleration_structure_index: tlas_blas_owned.len() as u32,
+                    });
+                    tlas_blas_owned.push(blas.0.clone());
+                }
             }
 
             for (vertex_buffer, index_buffer, index_count, offset) in entity_draw_calls {
-                render_pass.set_bind_group(2, &self.entity_bind_group, &[offset]);
-                render_pass.set_vertex_buffer(0, vertex_buffer);
-                render_pass.set_index_buffer(index_buffer, wgpu::IndexFormat::Uint32);
+                render_pass.set_bind_group(2, &self.entity_bind_group, &[offset as u32]);
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..index_count, 0, 0..1);
             }
         }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        #[cfg(target_os = "macos")]
+        let tlas = if let Some(metal_rt) = &self.metal_rt_ctx {
+            if !tlas_instances.is_empty() {
+                let tlas_blas_refs: Vec<&metal::AccelerationStructureRef> = tlas_blas_owned.iter().map(|b| b.as_ref()).collect();
+                Some(metal_rt.build_tlas(&tlas_instances, &tlas_blas_refs))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Dispatch Metal Compute Shader!
+        #[cfg(target_os = "macos")]
+        if let Some(metal_rt) = &self.metal_rt_ctx {
+            metal_rt.dispatch(
+                &self.final_rt_output_view,
+                &self.gbuffer_albedo_view,
+                &self.gbuffer_normal_view,
+                &self.gbuffer_mrao_view,
+                &self.depth_texture_view,
+                &self.camera_buffer,
+                tlas.as_ref(), // TLAS built from the current frame!
+            );
+        }
+
+        let mut ui_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("UI Encoder"),
+        });
+
+        ui_encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.final_rt_output_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+                texture: &output.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: self.config.width,
+                height: self.config.height,
+                depth_or_array_layers: 1,
+            },
+        );
 
         // 2. Draw UI
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -554,19 +812,20 @@ impl Renderer {
         self.ui.renderer.update_buffers(
             &self.device,
             &self.queue,
-            &mut encoder,
+            &mut ui_encoder,
             &tris,
             &screen_descriptor,
         );
 
         {
-            let mut ui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut ui_pass = ui_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("UI Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load, // Overlay over 3D world
+                        // Load since Metal compute just wrote the 3D scene to it
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -582,7 +841,7 @@ impl Renderer {
             self.ui.renderer.free_texture(id);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        self.queue.submit(std::iter::once(ui_encoder.finish()));
         output.present();
 
         Ok(())

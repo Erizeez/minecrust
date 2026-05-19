@@ -12,6 +12,10 @@ pub struct AssetPack {
     pub version: String,
     /// A single large RGBA PNG image bytes representing the texture atlas
     pub atlas_png: Vec<u8>,
+    /// The normal map texture atlas
+    pub atlas_normal_png: Vec<u8>,
+    /// The specular/LabPBR texture atlas (Smoothness, Metallic, Emissive)
+    pub atlas_specular_png: Vec<u8>,
     /// The dictionary mapping block namespace names (e.g. "minecraft:stone") to rendering data
     pub block_dict: HashMap<String, BlockRenderData>,
     /// The dictionary mapping raw texture paths to their atlas UV boundaries

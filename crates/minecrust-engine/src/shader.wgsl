@@ -6,10 +6,10 @@ struct CameraUniform {
 var<uniform> camera: CameraUniform;
 
 // Bind Group 1: Texture Atlas
-@group(1) @binding(0)
-var t_diffuse: texture_2d<f32>;
-@group(1) @binding(1)
-var s_diffuse: sampler;
+@group(1) @binding(0) var t_albedo: texture_2d<f32>;
+@group(1) @binding(1) var t_normal: texture_2d<f32>;
+@group(1) @binding(2) var t_specular: texture_2d<f32>;
+@group(1) @binding(3) var s_sampler: sampler;
 
 // Bind Group 2: Entity Transform (Optional for chunks, required for entities)
 struct EntityUniform {
@@ -28,6 +28,7 @@ struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec3<f32>,
+    @location(2) world_pos: vec3<f32>,
 };
 
 @vertex
@@ -41,15 +42,37 @@ fn vs_main(
     // Apply entity model matrix
     let world_position = entity.model * vec4<f32>(model.position, 1.0);
     out.clip_position = camera.view_proj * world_position;
+    out.world_pos = world_position.xyz;
     
     return out;
 }
 
+struct GBufferOutput {
+    @location(0) albedo: vec4<f32>,
+    @location(1) normal: vec4<f32>,
+    @location(2) mrao: vec4<f32>,
+};
+
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let tex_color = textureSample(t_diffuse, s_diffuse, in.uv);
-    if (tex_color.a < 0.1) {
+fn fs_main(in: VertexOutput) -> GBufferOutput {
+    let albedo = textureSample(t_albedo, s_sampler, in.uv);
+    if (albedo.a < 0.1) {
         discard;
     }
-    return tex_color * vec4<f32>(in.color, 1.0);
+    
+    // Calculate flat face normal from world position derivatives
+    let dx = dpdx(in.world_pos);
+    let dy = dpdy(in.world_pos);
+    let face_normal = normalize(cross(dx, dy));
+    
+    // Read PBR maps
+    let normal_map = textureSample(t_normal, s_sampler, in.uv);
+    let specular_map = textureSample(t_specular, s_sampler, in.uv);
+    
+    var out: GBufferOutput;
+    out.albedo = albedo * vec4<f32>(in.color, 1.0);
+    // Store face_normal for now (w=1.0)
+    out.normal = vec4<f32>(face_normal, 1.0); 
+    out.mrao = specular_map;
+    return out;
 }

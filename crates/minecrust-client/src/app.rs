@@ -27,8 +27,8 @@ pub struct MinecrustApp {
     loader: AssetLoader,
     lan_discoverer: crate::lan::LanServerDiscoverer,
     connect_addr: String,
-    main_menu_steve: Option<crate::game::Mesh>,
-    main_menu_alex: Option<crate::game::Mesh>,
+    main_menu_steve: Option<minecrust_engine::renderer::RenderMesh>,
+    main_menu_alex: Option<minecrust_engine::renderer::RenderMesh>,
 }
 
 impl MinecrustApp {
@@ -84,21 +84,13 @@ impl EngineApp for MinecrustApp {
             let pack: AssetPack = bincode::deserialize(&bytes).unwrap();
             log::info!("AssetPack loaded. Atlas size: {} bytes", pack.atlas_png.len());
 
-            renderer.load_atlas_bytes(&pack.atlas_png, 1024, 1024);
+            renderer.load_atlas_bytes(&pack.atlas_png, &pack.atlas_normal_png, &pack.atlas_specular_png, 1024, 1024);
 
             let (steve_v, steve_i) = crate::steve::build_steve_vertices(glam::Vec3::new(6.0, 100.0, 8.0), &pack, crate::steve::PlayerModelType::Steve);
-            self.main_menu_steve = Some(crate::game::Mesh {
-                vertex_buffer: renderer.create_vertex_buffer(&steve_v),
-                index_buffer: renderer.create_index_buffer(&steve_i),
-                index_count: steve_i.len() as u32,
-            });
+            self.main_menu_steve = Some(renderer.create_render_mesh(&steve_v, &steve_i));
 
             let (alex_v, alex_i) = crate::steve::build_steve_vertices(glam::Vec3::new(10.0, 100.0, 8.0), &pack, crate::steve::PlayerModelType::Alex);
-            self.main_menu_alex = Some(crate::game::Mesh {
-                vertex_buffer: renderer.create_vertex_buffer(&alex_v),
-                index_buffer: renderer.create_index_buffer(&alex_i),
-                index_count: alex_i.len() as u32,
-            });
+            self.main_menu_alex = Some(renderer.create_render_mesh(&alex_v, &alex_i));
 
             let arc_pack = Arc::new(pack);
             
@@ -107,13 +99,7 @@ impl EngineApp for MinecrustApp {
             ];
             for bone in bones {
                 let (vertices, indices) = crate::steve::build_steve_bone_vertices(&arc_pack, self.settings.player_model, bone);
-                let v_buf = renderer.create_vertex_buffer(&vertices);
-                let i_buf = renderer.create_index_buffer(&indices);
-                renderer.mesh_registry.insert(bone.to_string(), Arc::new(minecrust_engine::renderer::RenderMesh {
-                    vertex_buffer: v_buf,
-                    index_buffer: i_buf,
-                    index_count: indices.len() as u32,
-                }));
+                renderer.mesh_registry.insert(bone.to_string(), Arc::new(renderer.create_render_mesh(&vertices, &indices)));
             }
             
             self.game.asset_pack = Some(arc_pack);
@@ -279,17 +265,17 @@ impl EngineApp for MinecrustApp {
             let mut all_meshes = Vec::new();
             if self.state == AppState::MainMenu {
                 if let Some(m) = &self.main_menu_steve {
-                    all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                    all_meshes.push(m);
                 }
                 if let Some(m) = &self.main_menu_alex {
-                    all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                    all_meshes.push(m);
                 }
             } else {
                 for m in self.game.chunk_meshes.values() {
-                    all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                    all_meshes.push(m);
                 }
                 for m in self.game.lod_meshes.values() {
-                    all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                    all_meshes.push(m);
                 }
             }
             
@@ -299,13 +285,13 @@ impl EngineApp for MinecrustApp {
                     if let Some(m) = &p.mesh {
                         // Needs a transform matrix. For now, use identity since player mesh has position baked in vertices
                         // Wait, build_steve_vertices bakes position into the vertices. So Mat4::IDENTITY is correct.
-                        extra_entities.push((&m.vertex_buffer, &m.index_buffer, m.index_count, glam::Mat4::IDENTITY));
+                        extra_entities.push((m, glam::Mat4::IDENTITY));
                     }
                 }
             }
             
             // Map extra_entities to references of Mat4
-            let ref_extra_entities: Vec<_> = extra_entities.iter().map(|(v, i, c, m)| (*v, *i, *c, m)).collect();
+            let ref_extra_entities: Vec<_> = extra_entities.iter().map(|(m, mat)| (*m, mat)).collect();
 
             match renderer.draw_world(window, &self.game.world_manager.ecs, all_meshes.into_iter(), ref_extra_entities.into_iter(), |ctx| {
                 if !in_game {

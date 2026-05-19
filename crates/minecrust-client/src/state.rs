@@ -14,6 +14,7 @@ pub struct AppSettings {
     pub fullscreen: bool,
     pub language: String,
     pub player_model: crate::steve::PlayerModelType,
+    pub show_debug_info: bool,
 }
 
 impl Default for AppSettings {
@@ -24,6 +25,7 @@ impl Default for AppSettings {
             fullscreen: false,
             language: "zh_cn".to_string(),
             player_model: crate::steve::PlayerModelType::Steve,
+            show_debug_info: false,
         }
     }
 }

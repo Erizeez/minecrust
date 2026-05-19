@@ -46,6 +46,8 @@ pub struct GameSession {
     mesh_rx: Receiver<((i32, i32), minecrust_engine::world::ChunkMesh)>,
     pub meshing_chunks: HashSet<(i32, i32)>,
     
+    pub world_time: f32,
+    
     // LOD Meshing
     pub lod_meshes: HashMap<(u8, i32, i32), RenderMesh>,
     pub meshing_lods: HashSet<(u8, i32, i32)>,
@@ -81,6 +83,7 @@ impl GameSession {
             meshing_lods: HashSet::new(),
             mesh_lod_tx,
             mesh_lod_rx,
+            world_time: 0.0,
         };
 
         // Send a join request immediately on session startup
@@ -92,6 +95,12 @@ impl GameSession {
     }
 
     pub fn update(&mut self, dt: f64, time: f64, render_distance: i32, local_model: crate::steve::PlayerModelType, renderer: Option<&Renderer>) {
+        // Increment local time (24000 ticks per 1200 seconds -> 20 ticks per second)
+        self.world_time += dt as f32 * 20.0;
+        if self.world_time >= 24000.0 {
+            self.world_time -= 24000.0;
+        }
+
         // 1. Process all incoming Server Messages (non-blocking)
         while let Ok(msg) = self.server_rx.try_recv() {
             self.handle_server_message(msg);
@@ -315,6 +324,10 @@ impl GameSession {
             ServerMessage::PlayerLeft { id } => {
                 info!("Remote player (ID {}) left.", id);
                 self.other_players.remove(&id);
+            }
+            ServerMessage::TimeUpdate { time } => {
+                // Smooth sync or hard sync. For simplicity, just hard sync for now
+                self.world_time = time as f32;
             }
         }
     }

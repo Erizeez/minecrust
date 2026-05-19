@@ -27,6 +27,8 @@ pub struct IntegratedServer {
     next_entity_id: u32,
     
     requested_chunks: HashSet<(i32, i32)>,
+    
+    world_time: u32,
 }
 
 impl IntegratedServer {
@@ -111,6 +113,7 @@ impl IntegratedServer {
                     client_usernames: HashMap::new(),
                     next_entity_id: 1,
                     requested_chunks: HashSet::new(),
+                    world_time: 0,
                 };
                 server.run_loop();
             })
@@ -165,6 +168,16 @@ impl IntegratedServer {
             // 3. Server Tick update (20 Ticks/sec)
             if elapsed >= tick_duration {
                 last_tick = now;
+                self.world_time = (self.world_time + 1) % 24000;
+                
+                // Broadcast time update every 20 ticks (1 second)
+                if self.world_time % 20 == 0 {
+                    let msg = ServerMessage::TimeUpdate { time: self.world_time };
+                    if let Some(ref tx) = self.tx {
+                        let _ = tx.send(msg.clone());
+                    }
+                    self.broadcast(msg, 0, None);
+                }
             }
 
             // Yield CPU

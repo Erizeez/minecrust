@@ -48,4 +48,7 @@ pub enum ServerMessage {
     PlayerLeft {
         id: u32,
     },
+    TimeUpdate {
+        time: u32,
+    },
 }

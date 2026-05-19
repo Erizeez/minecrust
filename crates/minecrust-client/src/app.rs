@@ -17,6 +17,9 @@ pub struct MinecrustApp {
     camera: Camera,
     camera_uniform: CameraUniform,
     time: f64,
+    last_dt: f64,
+    sys: sysinfo::System,
+    pid: sysinfo::Pid,
 
     // Sub-components
     state: AppState,
@@ -47,6 +50,9 @@ impl MinecrustApp {
             },
             camera_uniform: CameraUniform::new(),
             time: 0.0,
+            last_dt: 0.016,
+            sys: sysinfo::System::new(),
+            pid: sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from_u32(0)),
             state: AppState::MainMenu,
             settings: AppSettings::default(),
             game: GameSession::new(server_tx, server_rx),
@@ -169,6 +175,7 @@ impl EngineApp for MinecrustApp {
 
     fn on_update(&mut self, dt: f64) {
         self.time += dt;
+        self.last_dt = dt;
 
         let in_game_play = self.state == AppState::InGame;
         if in_game_play {
@@ -207,6 +214,7 @@ impl EngineApp for MinecrustApp {
         }
 
         self.camera_uniform.update_view_proj(&self.camera);
+        self.camera_uniform.update_time(self.game.world_time);
 
         if let Some(renderer) = &mut self.renderer {
             renderer.update_camera(&self.camera_uniform);
@@ -229,6 +237,10 @@ impl EngineApp for MinecrustApp {
                 AppState::MultiplayerMenu => AppState::MainMenu,
             };
             self.transition_state(next_state);
+        }
+
+        if key == Key::Named(NamedKey::F4) && state == ElementState::Pressed {
+            self.settings.show_debug_info = !self.settings.show_debug_info;
         }
 
         if self.state == AppState::InGame {
@@ -293,6 +305,11 @@ impl EngineApp for MinecrustApp {
             // Map extra_entities to references of Mat4
             let ref_extra_entities: Vec<_> = extra_entities.iter().map(|(m, mat)| (*m, mat)).collect();
 
+            // Extract hardware info to avoid borrow conflicts in closure
+            let adapter_name = renderer.adapter_info.name.clone();
+            let backend_name = format!("{:?}", renderer.adapter_info.backend);
+            let display_res = format!("{}x{}", renderer.size.width, renderer.size.height);
+
             match renderer.draw_world(window, &self.game.world_manager.ecs, all_meshes.into_iter(), ref_extra_entities.into_iter(), |ctx| {
                 if !in_game {
                     exit_requested = ui::render_menus(
@@ -304,6 +321,104 @@ impl EngineApp for MinecrustApp {
                         &mut self.connect_addr,
                         &mut action_trigger,
                     );
+                }
+                
+                if self.settings.show_debug_info {
+                    self.sys.refresh_process(self.pid);
+                    let mut process_mem_mb = 0;
+                    let mut process_cpu = 0.0;
+                    if let Some(process) = self.sys.process(self.pid) {
+                        process_mem_mb = process.memory() / 1024 / 1024;
+                        process_cpu = process.cpu_usage();
+                    }
+                    
+                    let fps = 1.0 / self.last_dt;
+                    let mut px = 0.0;
+                    let mut py = 0.0;
+                    let mut pz = 0.0;
+                    let mut yaw = 0.0;
+                    let mut pitch = 0.0;
+                    if let Ok(transform) = self.game.world_manager.ecs.get::<&minecrust_shared::ecs::transform::LocalTransform>(self.game.local_player_entity) {
+                        px = transform.translation.x;
+                        py = transform.translation.y;
+                        pz = transform.translation.z;
+                    }
+                    if let Ok(player) = self.game.world_manager.ecs.get::<&minecrust_shared::ecs::player::Player>(self.game.local_player_entity) {
+                        yaw = player.yaw;
+                        pitch = player.pitch;
+                    }
+                    
+                    let cx = (px / minecrust_engine::world::CHUNK_WIDTH as f32).floor() as i32;
+                    let cz = (pz / minecrust_engine::world::CHUNK_DEPTH as f32).floor() as i32;
+                    let bx = px.floor() as i32;
+                    let by = py.floor() as i32;
+                    let bz = pz.floor() as i32;
+                    
+                    let dir = if yaw > -std::f32::consts::FRAC_PI_4 && yaw <= std::f32::consts::FRAC_PI_4 {
+                        "East (Towards +X)"
+                    } else if yaw > std::f32::consts::FRAC_PI_4 && yaw <= 3.0 * std::f32::consts::FRAC_PI_4 {
+                        "South (Towards +Z)"
+                    } else if yaw < -std::f32::consts::FRAC_PI_4 && yaw >= -3.0 * std::f32::consts::FRAC_PI_4 {
+                        "North (Towards -Z)"
+                    } else {
+                        "West (Towards -X)"
+                    };
+                    
+                    let w_time = self.game.world_time;
+                    let days = (w_time / 24000.0).floor() as i32;
+                    let hours = ((w_time / 1000.0) + 6.0) as i32 % 24;
+                    let mins = ((w_time % 1000.0) / 1000.0 * 60.0) as i32;
+                    
+                    let rendered_chunks = self.game.chunk_meshes.len();
+                    let total_entities = self.game.other_players.len() + 1;
+                    
+                    // Hardware info
+                    let os_name = std::env::consts::OS;
+                    let arch_name = std::env::consts::ARCH;
+                    
+                    // Left side
+                    egui::Area::new("debug_info_left".into())
+                        .fixed_pos(egui::pos2(5.0, 5.0))
+                        .interactable(false)
+                        .show(ctx, |ui| {
+                            let bg_color = egui::Color32::from_black_alpha(120);
+                            let text_color = egui::Color32::WHITE;
+                            let font_id = egui::FontId::proportional(16.0);
+                            
+                            egui::Frame::none().fill(bg_color).inner_margin(4.0).show(ui, |ui| {
+                                ui.label(egui::RichText::new("Minecrust 1.21.1").color(text_color).font(font_id.clone()).strong());
+                                ui.label(egui::RichText::new(format!("{} fps", fps.round() as i32)).color(text_color).font(font_id.clone()));
+                                ui.label(egui::RichText::new(format!("E: {}/{}   C: {}/{}", total_entities, total_entities, rendered_chunks, rendered_chunks)).color(text_color).font(font_id.clone()));
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new(format!("XYZ: {:.3} / {:.5} / {:.3}", px, py, pz)).color(text_color).font(font_id.clone()));
+                                ui.label(egui::RichText::new(format!("Block: {} {} {}", bx, by, bz)).color(text_color).font(font_id.clone()));
+                                ui.label(egui::RichText::new(format!("Chunk: {} {} {}", cx, by / 16, cz)).color(text_color).font(font_id.clone()));
+                                ui.label(egui::RichText::new(format!("Facing: {} ({:.1} / {:.1})", dir, yaw.to_degrees(), pitch.to_degrees())).color(text_color).font(font_id.clone()));
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new(format!("Day {}, Time: {:.0} ticks ({:02}:{:02})", days, w_time, hours, mins)).color(text_color).font(font_id.clone()));
+                            });
+                        });
+                        
+                    // Right side
+                    egui::Area::new("debug_info_right".into())
+                        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-5.0, 5.0))
+                        .interactable(false)
+                        .show(ctx, |ui| {
+                            let bg_color = egui::Color32::from_black_alpha(120);
+                            let text_color = egui::Color32::WHITE;
+                            let font_id = egui::FontId::proportional(16.0);
+                            
+                            egui::Frame::none().fill(bg_color).inner_margin(4.0).show(ui, |ui| {
+                                ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                                    ui.label(egui::RichText::new(format!("OS: {} ({})", os_name, arch_name)).color(text_color).font(font_id.clone()));
+                                    ui.label(egui::RichText::new(format!("CPU: {:.1}%", process_cpu)).color(text_color).font(font_id.clone()));
+                                    ui.label(egui::RichText::new(format!("Mem: {}MB", process_mem_mb)).color(text_color).font(font_id.clone()));
+                                    ui.add_space(8.0);
+                                    ui.label(egui::RichText::new(format!("Display: {} ({})", display_res, backend_name)).color(text_color).font(font_id.clone()));
+                                    ui.label(egui::RichText::new(format!("{}", adapter_name)).color(text_color).font(font_id.clone()));
+                                });
+                            });
+                        });
                 }
             }) {
                 Ok(_) => {}

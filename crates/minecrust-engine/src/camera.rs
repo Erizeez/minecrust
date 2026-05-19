@@ -42,6 +42,8 @@ pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     inv_view_proj: [[f32; 4]; 4],
     camera_pos: [f32; 4],
+    world_time: f32,
+    _padding: [f32; 3], // Pad to 16 bytes alignment
 }
 
 impl CameraUniform {
@@ -50,6 +52,8 @@ impl CameraUniform {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             camera_pos: [0.0; 4],
+            world_time: 0.0,
+            _padding: [0.0; 3],
         }
     }
 
@@ -58,5 +62,9 @@ impl CameraUniform {
         self.view_proj = view_proj.to_cols_array_2d();
         self.inv_view_proj = view_proj.inverse().to_cols_array_2d();
         self.camera_pos = [camera.eye.x, camera.eye.y, camera.eye.z, 1.0];
+    }
+    
+    pub fn update_time(&mut self, time: f32) {
+        self.world_time = time;
     }
 }

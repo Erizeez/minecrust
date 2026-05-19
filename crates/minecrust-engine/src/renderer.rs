@@ -59,6 +59,7 @@ pub struct Renderer {
     pub queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
+    pub adapter_info: wgpu::AdapterInfo,
 
     render_pipeline: wgpu::RenderPipeline,
     
@@ -395,12 +396,15 @@ impl Renderer {
         #[cfg(not(target_os = "macos"))]
         let metal_rt_ctx = None;
 
+        let adapter_info = adapter.get_info();
+
         Self {
             surface,
             device,
             queue,
             config,
             size,
+            adapter_info,
             render_pipeline,
             camera_buffer,
             camera_bind_group,

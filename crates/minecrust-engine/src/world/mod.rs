@@ -21,10 +21,10 @@ pub struct WorldManager {
 }
 
 impl WorldManager {
-    pub fn new(seed: u32) -> Self {
+    pub fn new(seed: u32, registry: Arc<minecrust_shared::world::block::BlockRegistry>) -> Self {
         Self {
             ecs: hecs::World::new(),
-            chunk_manager: ChunkManager::new(seed),
+            chunk_manager: ChunkManager::new(seed, registry),
             lod_manager: lod::LodManager::new(),
             task_pool: Arc::new(TaskPool::default()),
         }
@@ -37,10 +37,10 @@ pub struct ChunkManager {
 }
 
 impl ChunkManager {
-    pub fn new(seed: u32) -> Self {
+    pub fn new(seed: u32, registry: Arc<minecrust_shared::world::block::BlockRegistry>) -> Self {
         Self {
             chunks: HashMap::new(),
-            generator: WorldGenerator::new(seed),
+            generator: WorldGenerator::new(seed, registry),
         }
     }
 

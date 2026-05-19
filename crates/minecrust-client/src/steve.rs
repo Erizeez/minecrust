@@ -68,7 +68,7 @@ pub fn build_steve_vertices(
         &mut vertices, &mut indices,
         c + glam::Vec3::new(-4.0 * p, 24.0 * p, -4.0 * p),
         c + glam::Vec3::new(4.0 * p, 32.0 * p, 4.0 * p),
-        &head_uvs, [1.0, 1.0, 1.0],
+        &head_uvs, [1.0, 1.0, 1.0, 1.0],
     );
 
     // 2. Torso (8x12x4 pixels)
@@ -78,7 +78,7 @@ pub fn build_steve_vertices(
         &mut vertices, &mut indices,
         c + glam::Vec3::new(-4.0 * p, 12.0 * p, -2.0 * p),
         c + glam::Vec3::new(4.0 * p, 24.0 * p, 2.0 * p),
-        &torso_uvs, [1.0, 1.0, 1.0],
+        &torso_uvs, [1.0, 1.0, 1.0, 1.0],
     );
 
     // 3. Right Leg (-X side in MC, +X side in model if we look from front. Wait, Right leg is -X.)
@@ -88,7 +88,7 @@ pub fn build_steve_vertices(
         &mut vertices, &mut indices,
         c + glam::Vec3::new(-4.0 * p, 0.0 * p, -2.0 * p),
         c + glam::Vec3::new(0.0 * p, 12.0 * p, 2.0 * p),
-        &r_leg_uvs, [1.0, 1.0, 1.0],
+        &r_leg_uvs, [1.0, 1.0, 1.0, 1.0],
     );
 
     // 4. Left Leg (+X side)
@@ -98,7 +98,7 @@ pub fn build_steve_vertices(
         &mut vertices, &mut indices,
         c + glam::Vec3::new(0.0 * p, 0.0 * p, -2.0 * p),
         c + glam::Vec3::new(4.0 * p, 12.0 * p, 2.0 * p),
-        &l_leg_uvs, [1.0, 1.0, 1.0],
+        &l_leg_uvs, [1.0, 1.0, 1.0, 1.0],
     );
 
     // 5. Right Arm (-X side)
@@ -110,7 +110,7 @@ pub fn build_steve_vertices(
         &mut vertices, &mut indices,
         c + glam::Vec3::new(-4.0 * p - arm_w * p, 12.0 * p, -2.0 * p),
         c + glam::Vec3::new(-4.0 * p, 24.0 * p, 2.0 * p),
-        &r_arm_uvs, [1.0, 1.0, 1.0],
+        &r_arm_uvs, [1.0, 1.0, 1.0, 1.0],
     );
 
     // 6. Left Arm (+X side)
@@ -120,7 +120,7 @@ pub fn build_steve_vertices(
         &mut vertices, &mut indices,
         c + glam::Vec3::new(4.0 * p, 12.0 * p, -2.0 * p),
         c + glam::Vec3::new(4.0 * p + arm_w * p, 24.0 * p, 2.0 * p),
-        &l_arm_uvs, [1.0, 1.0, 1.0],
+        &l_arm_uvs, [1.0, 1.0, 1.0, 1.0],
     );
 
     (vertices, indices)
@@ -166,31 +166,31 @@ pub fn build_steve_bone_vertices(
     match bone_name {
         "steve_head" => {
             let uvs = get_faces(0.0, 0.0, 8.0, 8.0, 8.0);
-            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-4.0 * p, 0.0, -4.0 * p), glam::Vec3::new(4.0 * p, 8.0 * p, 4.0 * p), &uvs, [1.0, 1.0, 1.0]);
+            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-4.0 * p, 0.0, -4.0 * p), glam::Vec3::new(4.0 * p, 8.0 * p, 4.0 * p), &uvs, [1.0, 1.0, 1.0, 1.0]);
         }
         "steve_body" => {
             let uvs = get_faces(16.0, 16.0, 8.0, 12.0, 4.0);
-            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-4.0 * p, 0.0, -2.0 * p), glam::Vec3::new(4.0 * p, 12.0 * p, 2.0 * p), &uvs, [1.0, 1.0, 1.0]);
+            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-4.0 * p, 0.0, -2.0 * p), glam::Vec3::new(4.0 * p, 12.0 * p, 2.0 * p), &uvs, [1.0, 1.0, 1.0, 1.0]);
         }
         "steve_right_arm" => {
             // Note: In our ECS, right arm is +X side (model right)
             let uvs = get_faces(40.0, 16.0, arm_w, 12.0, 4.0);
             let aw_p = arm_w * p / 2.0;
-            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-aw_p, -10.0 * p, -2.0 * p), glam::Vec3::new(aw_p, 2.0 * p, 2.0 * p), &uvs, [1.0, 1.0, 1.0]);
+            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-aw_p, -10.0 * p, -2.0 * p), glam::Vec3::new(aw_p, 2.0 * p, 2.0 * p), &uvs, [1.0, 1.0, 1.0, 1.0]);
         }
         "steve_left_arm" => {
             // Left arm is -X side (model left)
             let uvs = get_faces(32.0, 48.0, arm_w, 12.0, 4.0);
             let aw_p = arm_w * p / 2.0;
-            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-aw_p, -10.0 * p, -2.0 * p), glam::Vec3::new(aw_p, 2.0 * p, 2.0 * p), &uvs, [1.0, 1.0, 1.0]);
+            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-aw_p, -10.0 * p, -2.0 * p), glam::Vec3::new(aw_p, 2.0 * p, 2.0 * p), &uvs, [1.0, 1.0, 1.0, 1.0]);
         }
         "steve_right_leg" => {
             let uvs = get_faces(0.0, 16.0, 4.0, 12.0, 4.0);
-            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-2.0 * p, -12.0 * p, -2.0 * p), glam::Vec3::new(2.0 * p, 0.0, 2.0 * p), &uvs, [1.0, 1.0, 1.0]);
+            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-2.0 * p, -12.0 * p, -2.0 * p), glam::Vec3::new(2.0 * p, 0.0, 2.0 * p), &uvs, [1.0, 1.0, 1.0, 1.0]);
         }
         "steve_left_leg" => {
             let uvs = get_faces(16.0, 48.0, 4.0, 12.0, 4.0);
-            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-2.0 * p, -12.0 * p, -2.0 * p), glam::Vec3::new(2.0 * p, 0.0, 2.0 * p), &uvs, [1.0, 1.0, 1.0]);
+            add_cuboid(&mut vertices, &mut indices, glam::Vec3::new(-2.0 * p, -12.0 * p, -2.0 * p), glam::Vec3::new(2.0 * p, 0.0, 2.0 * p), &uvs, [1.0, 1.0, 1.0, 1.0]);
         }
         _ => {}
     }
@@ -204,7 +204,7 @@ fn add_cuboid(
     min: glam::Vec3,
     max: glam::Vec3,
     uvs_per_face: &[[f32; 4]; 6],
-    color: [f32; 3],
+    color: [f32; 4],
 ) {
     let start_idx = vertices.len() as u32;
 

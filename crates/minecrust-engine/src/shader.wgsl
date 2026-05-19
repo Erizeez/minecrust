@@ -21,13 +21,13 @@ var<uniform> entity: EntityUniform;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) uv: vec2<f32>,
-    @location(2) color: vec3<f32>,
+    @location(2) color: vec4<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
-    @location(1) color: vec3<f32>,
+    @location(1) color: vec4<f32>,
     @location(2) world_pos: vec3<f32>,
 };
 
@@ -56,8 +56,32 @@ struct GBufferOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> GBufferOutput {
     let albedo = textureSample(t_albedo, s_sampler, in.uv);
-    if (albedo.a < 0.1) {
+    let final_alpha = albedo.a * in.color.a;
+    
+    if (final_alpha < 0.1) {
         discard;
+    }
+    
+    // Screen-door transparency (dithering) for partial transparency (e.g. water)
+    if (final_alpha < 0.99) {
+        let x = u32(in.clip_position.x);
+        let y = u32(in.clip_position.y);
+        
+        // Simple 4x4 Bayer matrix approximation for dithering
+        // We use clip_position.xy (screen coordinates) to generate a dither threshold
+        let index = (x % 4u) + (y % 4u) * 4u;
+        // Precomputed 4x4 Bayer matrix thresholds divided by 16.0
+        var thresholds = array<f32, 16>(
+            0.0625, 0.5625, 0.1875, 0.6875,
+            0.8125, 0.3125, 0.9375, 0.4375,
+            0.2500, 0.7500, 0.1250, 0.6250,
+            1.0000, 0.5000, 0.8750, 0.3750
+        );
+        let threshold = thresholds[index];
+        
+        if (final_alpha < threshold) {
+            discard;
+        }
     }
     
     // Calculate flat face normal from world position derivatives
@@ -70,7 +94,7 @@ fn fs_main(in: VertexOutput) -> GBufferOutput {
     let specular_map = textureSample(t_specular, s_sampler, in.uv);
     
     var out: GBufferOutput;
-    out.albedo = albedo * vec4<f32>(in.color, 1.0);
+    out.albedo = vec4<f32>(albedo.rgb * in.color.rgb, 1.0);
     // Store face_normal for now (w=1.0)
     out.normal = vec4<f32>(face_normal, 1.0); 
     out.mrao = specular_map;

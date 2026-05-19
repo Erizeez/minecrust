@@ -8,7 +8,7 @@ use winit::window::Window;
 pub struct Vertex {
     pub position: [f32; 3],
     pub uv: [f32; 2],
-    pub color: [f32; 3],
+    pub color: [f32; 4],
 }
 
 #[cfg(target_os = "macos")]
@@ -46,7 +46,7 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 5]>() as wgpu::BufferAddress,
                     shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x4,
                 },
             ],
         }
@@ -67,9 +67,10 @@ pub struct Renderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 
-    // Atlas Texture (Loaded later)
+    // Atlas Texture
     atlas_bind_group: Option<wgpu::BindGroup>,
     atlas_bind_group_layout: wgpu::BindGroupLayout,
+    pub albedo_atlas_tex: Option<wgpu::Texture>,
     
     // G-Buffer
     pub gbuffer_albedo_tex: wgpu::Texture,
@@ -95,6 +96,8 @@ pub struct Renderer {
     pub entity_alignment: u32,
 
     pub mesh_registry: std::collections::HashMap<String, Arc<RenderMesh>>,
+
+    pub ui_atlas_texture_id: Option<egui::TextureId>,
 
     pub ui: crate::ui::EngineUi,
 }
@@ -422,6 +425,7 @@ impl Renderer {
             camera_bind_group,
             atlas_bind_group: None,
             atlas_bind_group_layout,
+            albedo_atlas_tex: None,
             gbuffer_albedo_tex,
             gbuffer_normal_tex,
             gbuffer_mrao_tex,
@@ -438,6 +442,7 @@ impl Renderer {
             entity_bind_group,
             entity_alignment,
             mesh_registry: std::collections::HashMap::new(),
+            ui_atlas_texture_id: None,
             ui,
         }
     }
@@ -518,7 +523,7 @@ impl Renderer {
     pub fn load_atlas_bytes(&mut self, albedo_bytes: &[u8], normal_bytes: &[u8], specular_bytes: &[u8], width: u32, height: u32) {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         
-        let create_texture = |label: &str, format: wgpu::TextureFormat, bytes: &[u8]| -> wgpu::TextureView {
+        let create_texture = |label: &str, format: wgpu::TextureFormat, bytes: &[u8]| -> (wgpu::Texture, wgpu::TextureView) {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label), size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
                 format, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
@@ -529,12 +534,16 @@ impl Renderer {
                 wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4 * width), rows_per_image: Some(height) },
                 size,
             );
-            texture.create_view(&wgpu::TextureViewDescriptor::default())
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            (texture, view)
         };
 
-        let view_albedo = create_texture("Albedo Atlas", wgpu::TextureFormat::Rgba8UnormSrgb, albedo_bytes);
-        let view_normal = create_texture("Normal Atlas", wgpu::TextureFormat::Rgba8Unorm, normal_bytes);
-        let view_specular = create_texture("Specular Atlas", wgpu::TextureFormat::Rgba8Unorm, specular_bytes);
+        let (tex_albedo, view_albedo) = create_texture("Albedo Atlas", wgpu::TextureFormat::Rgba8UnormSrgb, albedo_bytes);
+        self.ui_atlas_texture_id = Some(self.ui.register_native_texture(&self.device, &view_albedo));
+        self.albedo_atlas_tex = Some(tex_albedo);
+
+        let (_, view_normal) = create_texture("Normal Atlas", wgpu::TextureFormat::Rgba8Unorm, normal_bytes);
+        let (_, view_specular) = create_texture("Specular Atlas", wgpu::TextureFormat::Rgba8Unorm, specular_bytes);
 
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -556,6 +565,27 @@ impl Renderer {
             ],
             label: Some("atlas_bind_group"),
         }));
+    }
+
+    pub fn update_atlas_region(&self, x: u32, y: u32, width: u32, height: u32, rgba_data: &[u8]) {
+        if let Some(tex) = &self.albedo_atlas_tex {
+            let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+            self.queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x, y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                rgba_data,
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * width),
+                    rows_per_image: Some(height),
+                },
+                size,
+            );
+        }
     }
 
     pub fn create_vertex_buffer(&self, vertices: &[Vertex]) -> wgpu::Buffer {

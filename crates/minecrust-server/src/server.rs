@@ -37,6 +37,7 @@ impl IntegratedServer {
     pub fn start(
         seed: u32,
         bind_addr: Option<SocketAddr>,
+        registry: Arc<minecrust_shared::world::block::BlockRegistry>,
     ) -> (Sender<ClientMessage>, Receiver<ServerMessage>) {
         let (client_tx, server_rx) = crossbeam_channel::unbounded::<ClientMessage>();
         let (server_tx, client_rx) = crossbeam_channel::unbounded::<ServerMessage>();
@@ -103,8 +104,8 @@ impl IntegratedServer {
                 }
 
                 let mut server = Self {
-                    world_manager: WorldManager::new(seed),
-                    generator: Arc::new(WorldGenerator::new(seed)),
+                    world_manager: WorldManager::new(seed, Arc::clone(&registry)),
+                    generator: Arc::new(WorldGenerator::new(seed, registry)),
                     rx: if laminar_sender.is_none() { Some(server_rx) } else { None },
                     tx: if laminar_sender.is_none() { Some(server_tx) } else { None },
                     laminar_sender,

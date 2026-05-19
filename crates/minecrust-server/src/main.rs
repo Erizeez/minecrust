@@ -19,7 +19,8 @@ fn main() {
 
     // Start the IntegratedServer
     // The server will run in a background thread, so we need to keep the main thread alive.
-    let (_client_tx, _client_rx) = minecrust_server::IntegratedServer::start(12345, Some(bind_addr));
+    let registry = std::sync::Arc::new(minecrust_shared::world::block::BlockRegistry::new());
+    let (_client_tx, _client_rx) = minecrust_server::server::IntegratedServer::start(12345, Some(bind_addr), registry);
 
     info!("Dedicated server successfully started. Press Ctrl+C to stop.");
 

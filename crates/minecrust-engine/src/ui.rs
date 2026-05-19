@@ -40,4 +40,12 @@ impl EngineUi {
         let response = self.state.on_window_event(window, event);
         response.consumed
     }
+
+    pub fn register_native_texture(
+        &mut self,
+        device: &wgpu::Device,
+        texture_view: &wgpu::TextureView,
+    ) -> egui::TextureId {
+        self.renderer.register_native_texture(device, texture_view, wgpu::FilterMode::Nearest)
+    }
 }

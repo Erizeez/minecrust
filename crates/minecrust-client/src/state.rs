@@ -5,6 +5,7 @@ pub enum AppState {
     Settings { from_in_game: bool },
     InGame,
     InGameMenu,
+    Inventory,
 }
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,7 @@ pub struct AppSettings {
     pub player_model: crate::steve::PlayerModelType,
     pub show_debug_info: bool,
     pub enable_raytracing: bool,
+    pub selected_block_id: u16,
 }
 
 impl Default for AppSettings {
@@ -28,6 +30,7 @@ impl Default for AppSettings {
             player_model: crate::steve::PlayerModelType::Steve,
             show_debug_info: false,
             enable_raytracing: true,
+            selected_block_id: 1, // Stone as default
         }
     }
 }

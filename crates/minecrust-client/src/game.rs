@@ -32,6 +32,7 @@ pub struct GameSession {
     pub input_manager: InputManager,
     pub chunk_meshes: HashMap<(i32, i32), RenderMesh>,
     pub asset_pack: Option<Arc<AssetPack>>,
+    pub block_registry: Arc<minecrust_shared::world::block::BlockRegistry>,
     pub other_players: HashMap<u32, RemotePlayer>,
     pub local_player_mesh: Option<RenderMesh>,
     
@@ -53,11 +54,14 @@ pub struct GameSession {
     pub meshing_lods: HashSet<(u8, i32, i32)>,
     mesh_lod_tx: Sender<((u8, i32, i32), minecrust_engine::world::ChunkMesh)>,
     mesh_lod_rx: Receiver<((u8, i32, i32), minecrust_engine::world::ChunkMesh)>,
+    
+    // Animation state
+    pub anim_frame_indices: HashMap<String, u32>,
 }
 
 impl GameSession {
-    pub fn new(server_tx: Sender<ClientMessage>, server_rx: Receiver<ServerMessage>) -> Self {
-        let mut world_manager = WorldManager::new(12345);
+    pub fn new(server_tx: Sender<ClientMessage>, server_rx: Receiver<ServerMessage>, registry: Arc<minecrust_shared::world::block::BlockRegistry>) -> Self {
+        let mut world_manager = WorldManager::new(12345, Arc::clone(&registry));
         
         let local_player_entity = minecrust_engine::world::prefab::spawn_steve(&mut world_manager.ecs, glam::Vec3::new(8.0, 60.0, 8.0));
 
@@ -70,6 +74,7 @@ impl GameSession {
             input_manager: InputManager::new(),
             chunk_meshes: HashMap::new(),
             asset_pack: None,
+            block_registry: registry,
             other_players: HashMap::new(),
             local_player_mesh: None,
             server_tx,
@@ -84,6 +89,7 @@ impl GameSession {
             mesh_lod_tx,
             mesh_lod_rx,
             world_time: 0.0,
+            anim_frame_indices: HashMap::new(),
         };
 
         // Send a join request immediately on session startup
@@ -101,13 +107,39 @@ impl GameSession {
             self.world_time -= 24000.0;
         }
 
+        // Update animated textures
+        if let Some(renderer) = renderer {
+            if let Some(pack) = &self.asset_pack {
+                for (tex_name, anim) in &pack.texture_animations {
+                    let current_frame = (self.world_time / anim.frametime as f32) as u32 % anim.frame_count;
+                    
+                    let prev_frame = self.anim_frame_indices.get(tex_name).copied().unwrap_or(u32::MAX);
+                    if current_frame != prev_frame {
+                        // Frame changed, upload new frame to atlas
+                        if let Some(rgba) = anim.frames_rgba.get(current_frame as usize) {
+                            renderer.update_atlas_region(anim.atlas_x, anim.atlas_y, anim.frame_size, anim.frame_size, rgba);
+                        }
+                        self.anim_frame_indices.insert(tex_name.clone(), current_frame);
+                    }
+                }
+            }
+        }
+
         // 1. Process all incoming Server Messages (non-blocking)
         while let Ok(msg) = self.server_rx.try_recv() {
             self.handle_server_message(msg);
         }
 
         // 2. Perform local client player movement
-        player_movement_system(&mut self.world_manager.ecs, &mut self.input_manager, &self.world_manager.chunk_manager, dt, time);
+        let is_solid = {
+            let registry = std::sync::Arc::clone(&self.block_registry);
+            move |block_id: u16| -> bool {
+                if block_id == 0 { return false; }
+                let name = registry.get_name(block_id).map(|s| s.as_str()).unwrap_or("");
+                !name.contains("water")
+            }
+        };
+        player_movement_system(&mut self.world_manager.ecs, &mut self.input_manager, &self.world_manager.chunk_manager, dt, time, &is_solid);
         
         // 2.5 Run ECS Animations and Transforms
         procedural_animation_system(&mut self.world_manager.ecs, dt as f32);
@@ -214,29 +246,41 @@ impl GameSession {
                         let chunk_clone = chunk.clone();
                         let pack_clone = Arc::clone(pack);
                         let mesh_tx_clone = self.mesh_tx.clone();
+                        let registry_clone = Arc::clone(&self.block_registry);
                         
+                        let registry_clone2 = Arc::clone(&self.block_registry);
                         self.world_manager.task_pool.spawn(move || {
-                            let chunk_mesh_data = Mesher::mesh_chunk(&chunk_clone, |block_id, face_idx| {
-                                let block_name = match block_id {
-                                    1 => "minecraft:stone",
-                                    2 => "minecraft:dirt",
-                                    3 => "minecraft:grass_block",
-                                    _ => "minecraft:dirt",
-                                };
-                                let color = if block_id == 3 && face_idx == 4 {
-                                    // Grass block Top
-                                    [0.44, 0.70, 0.33] // Plains green tint
-                                } else {
-                                    [1.0, 1.0, 1.0]
-                                };
+                            let chunk_mesh_data = Mesher::mesh_chunk(
+                                &chunk_clone,
+                                |block_id, face_idx| {
+                                    let block_name = registry_clone.get_name(block_id)
+                                        .map(|s| s.as_str())
+                                        .unwrap_or("minecraft:air");
 
-                                if let Some(block_data) = pack_clone.block_dict.get(block_name) {
-                                    let face = &block_data.uv_faces[face_idx % block_data.uv_faces.len()];
-                                    ([face[0], face[1], face[2], face[3]], color)
-                                } else {
-                                    ([0.0, 0.0, 0.0, 0.0], color)
+                                    let color = if block_name == "minecraft:grass_block" && face_idx == 4 {
+                                        // Grass block Top
+                                        [0.44, 0.70, 0.33, 1.0] // Plains green tint
+                                    } else if block_name.contains("leaves") {
+                                        [0.28, 0.54, 0.17, 1.0] // Tree leaves tint
+                                    } else if block_name.contains("water") {
+                                        [0.24, 0.46, 0.89, 0.6] // Water tint with alpha
+                                    } else {
+                                        [1.0, 1.0, 1.0, 1.0]
+                                    };
+
+                                    if let Some(block_data) = pack_clone.block_dict.get(block_name) {
+                                        let face = &block_data.uv_faces[face_idx % block_data.uv_faces.len()];
+                                        ([face[0], face[1], face[2], face[3]], color)
+                                    } else {
+                                        ([0.0, 0.0, 0.0, 0.0], color)
+                                    }
+                                },
+                                |block_id| {
+                                    if block_id == 0 { return false; }
+                                    let name = registry_clone2.get_name(block_id).map(|s| s.as_str()).unwrap_or("");
+                                    !name.contains("water") && !name.contains("leaves") && !name.contains("glass")
                                 }
-                            });
+                            );
                             
                             let _ = mesh_tx_clone.send((pos, chunk_mesh_data));
                         });

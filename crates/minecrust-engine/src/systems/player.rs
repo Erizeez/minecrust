@@ -21,6 +21,7 @@ pub fn player_movement_system(
     chunk_manager: &ChunkManager,
     dt: f64,
     time: f64,
+    is_solid: &impl Fn(u16) -> bool,
 ) {
     let dt_f32 = dt as f32;
 
@@ -94,7 +95,7 @@ pub fn player_movement_system(
             transform.translation + Vec3::new(0.3, 1.8, 0.3),
         );
 
-        let (final_vel, grounded) = PhysicsManager::resolve_collision_with_chunks(chunk_manager, &player_aabb, player.velocity, dt_f32);
+        let (final_vel, grounded) = PhysicsManager::resolve_collision_with_chunks(chunk_manager, &player_aabb, player.velocity, dt_f32, is_solid);
         
         player.velocity = final_vel;
         if !player.is_flying {
@@ -162,7 +163,7 @@ pub fn player_movement_system(
     input.clear_frame_state();
 }
 
-pub fn get_camera_vectors(player: &Player, transform: &LocalTransform, chunk_manager: &ChunkManager) -> (Vec3, f32, f32) {
+pub fn get_camera_vectors(player: &Player, transform: &LocalTransform, chunk_manager: &ChunkManager, is_solid: &impl Fn(u16) -> bool) -> (Vec3, f32, f32) {
     let eye = transform.translation + Vec3::new(0.0, 1.62, 0.0);
     let forward = Vec3::new(player.yaw.cos() * player.pitch.cos(), player.pitch.sin(), player.yaw.sin()).normalize();
     
@@ -172,13 +173,13 @@ pub fn get_camera_vectors(player: &Player, transform: &LocalTransform, chunk_man
         }
         CameraMode::ThirdPersonBack => {
             let max_dist = 4.0;
-            let actual_dist = PhysicsManager::raycast_distance_with_chunks(chunk_manager, eye, -forward, max_dist);
+            let actual_dist = PhysicsManager::raycast_distance_with_chunks(chunk_manager, eye, -forward, max_dist, &is_solid);
             let actual_eye = eye - forward * actual_dist;
             (actual_eye, player.yaw, player.pitch)
         }
         CameraMode::ThirdPersonFront => {
             let max_dist = 4.0;
-            let actual_dist = PhysicsManager::raycast_distance_with_chunks(chunk_manager, eye, forward, max_dist);
+            let actual_dist = PhysicsManager::raycast_distance_with_chunks(chunk_manager, eye, forward, max_dist, &is_solid);
             let actual_eye = eye + forward * actual_dist;
             (actual_eye, player.yaw + std::f32::consts::PI, -player.pitch)
         }

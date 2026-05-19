@@ -20,6 +20,25 @@ pub struct AssetPack {
     pub block_dict: HashMap<String, BlockRenderData>,
     /// The dictionary mapping raw texture paths to their atlas UV boundaries
     pub texture_dict: HashMap<String, [f32; 4]>,
+    /// Animated textures mapping
+    pub texture_animations: HashMap<String, TextureAnimation>,
+}
+
+/// Metadata and raw frames for animated textures
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TextureAnimation {
+    /// Number of ticks each frame should be displayed
+    pub frametime: u32,
+    /// Total number of frames in the animation
+    pub frame_count: u32,
+    /// Width and height of a single frame (e.g. 16)
+    pub frame_size: u32,
+    /// X offset in the atlas texture (in pixels)
+    pub atlas_x: u32,
+    /// Y offset in the atlas texture (in pixels)
+    pub atlas_y: u32,
+    /// Raw RGBA bytes for each frame. Length is frame_count. Each element is frame_size * frame_size * 4 bytes.
+    pub frames_rgba: Vec<Vec<u8>>,
 }
 
 /// The rendering data for a specific block (MVP only stores basic full cube blocks)

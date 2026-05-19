@@ -36,7 +36,8 @@ pub struct MinecrustApp {
 
 impl MinecrustApp {
     pub fn new() -> Self {
-        let (server_tx, server_rx) = minecrust_server::IntegratedServer::start(12345, None);
+        let dummy_registry = std::sync::Arc::new(minecrust_shared::world::block::BlockRegistry::new());
+        let (server_tx, server_rx) = minecrust_server::server::IntegratedServer::start(12345, None, std::sync::Arc::clone(&dummy_registry));
         Self {
             renderer: None,
             camera: Camera {
@@ -55,7 +56,7 @@ impl MinecrustApp {
             pid: sysinfo::get_current_pid().unwrap_or(sysinfo::Pid::from_u32(0)),
             state: AppState::MainMenu,
             settings: AppSettings::default(),
-            game: GameSession::new(server_tx, server_rx),
+            game: GameSession::new(server_tx, server_rx, dummy_registry),
             audio: AudioManager::new(),
             lang: LangManager::new(),
             loader: AssetLoader::new(),
@@ -99,6 +100,14 @@ impl EngineApp for MinecrustApp {
             self.main_menu_alex = Some(renderer.create_render_mesh(&alex_v, &alex_i));
 
             let arc_pack = Arc::new(pack);
+            
+            let mut registry = minecrust_shared::world::block::BlockRegistry::new();
+            let mut sorted_keys: Vec<_> = arc_pack.block_dict.keys().collect();
+            sorted_keys.sort();
+            for block_name in sorted_keys {
+                registry.register(block_name);
+            }
+            self.game.block_registry = Arc::new(registry);
             
             let bones = [
                 "steve_head", "steve_body", "steve_right_arm", "steve_left_arm", "steve_right_leg", "steve_left_leg",
@@ -177,14 +186,14 @@ impl EngineApp for MinecrustApp {
         self.time += dt;
         self.last_dt = dt;
 
-        let in_game_play = self.state == AppState::InGame;
+        let in_game_play = self.state == AppState::InGame || self.state == AppState::Inventory;
         if in_game_play {
             self.game.update(dt, self.time, self.settings.render_distance, self.settings.player_model, self.renderer.as_ref());
         }
 
         // Update Camera Eye and Target
         match self.state {
-            AppState::InGame | AppState::InGameMenu | AppState::Settings { from_in_game: true } => {
+            AppState::InGame | AppState::Inventory | AppState::InGameMenu | AppState::Settings { from_in_game: true } => {
                 let (eye, yaw, pitch) = {
                     use minecrust_shared::ecs::player::Player;
                     use minecrust_shared::ecs::transform::LocalTransform;
@@ -192,7 +201,13 @@ impl EngineApp for MinecrustApp {
                     
                     if let Ok(player) = self.game.world_manager.ecs.get::<&Player>(self.game.local_player_entity) {
                         if let Ok(transform) = self.game.world_manager.ecs.get::<&LocalTransform>(self.game.local_player_entity) {
-                            get_camera_vectors(&player, &transform, &self.game.world_manager.chunk_manager)
+                            let registry = std::sync::Arc::clone(&self.game.block_registry);
+                            let is_solid = move |block_id: u16| -> bool {
+                                if block_id == 0 { return false; }
+                                let name = registry.get_name(block_id).map(|s| s.as_str()).unwrap_or("");
+                                !name.contains("water")
+                            };
+                            get_camera_vectors(&player, &transform, &self.game.world_manager.chunk_manager, &is_solid)
                         } else {
                             (glam::Vec3::ZERO, 0.0, 0.0)
                         }
@@ -228,6 +243,7 @@ impl EngineApp for MinecrustApp {
             let next_state = match self.state {
                 AppState::InGame => AppState::InGameMenu,
                 AppState::InGameMenu => AppState::InGame,
+                AppState::Inventory => AppState::InGame,
                 AppState::Settings { from_in_game } => {
                     if from_in_game {
                         AppState::InGameMenu
@@ -239,6 +255,17 @@ impl EngineApp for MinecrustApp {
                 AppState::MultiplayerMenu => AppState::MainMenu,
             };
             self.transition_state(next_state);
+        }
+
+        if let Key::Character(c) = &key {
+            if (c == "e" || c == "E") && state == ElementState::Pressed {
+                let next_state = match self.state {
+                    AppState::InGame => AppState::Inventory,
+                    AppState::Inventory => AppState::InGame,
+                    _ => self.state,
+                };
+                self.transition_state(next_state);
+            }
         }
 
         if key == Key::Named(NamedKey::F4) && state == ElementState::Pressed {
@@ -312,6 +339,8 @@ impl EngineApp for MinecrustApp {
             let backend_name = format!("{:?}", renderer.adapter_info.backend);
             let display_res = format!("{}x{}", renderer.size.width, renderer.size.height);
 
+            let atlas_id = renderer.ui_atlas_texture_id;
+
             match renderer.draw_world(window, &self.game.world_manager.ecs, all_meshes.into_iter(), ref_extra_entities.into_iter(), |ctx| {
                 if !in_game {
                     exit_requested = ui::render_menus(
@@ -322,6 +351,9 @@ impl EngineApp for MinecrustApp {
                         &self.lan_discoverer,
                         &mut self.connect_addr,
                         &mut action_trigger,
+                        Some(&self.game.block_registry),
+                        self.game.asset_pack.as_deref(),
+                        atlas_id,
                     );
                 }
                 
@@ -434,8 +466,8 @@ impl EngineApp for MinecrustApp {
             match action {
                 ui::MultiplayerAction::JoinSingleplayer => {
                     log::info!("Starting game in singleplayer mode...");
-                    let (server_tx, server_rx) = minecrust_server::IntegratedServer::start(12345, None);
-                    let mut new_game = GameSession::new(server_tx, server_rx);
+                    let (server_tx, server_rx) = minecrust_server::server::IntegratedServer::start(12345, None, Arc::clone(&self.game.block_registry));
+                    let mut new_game = GameSession::new(server_tx, server_rx, Arc::clone(&self.game.block_registry));
                     new_game.asset_pack = self.game.asset_pack.take();
                     self.game = new_game;
                     self.transition_state(AppState::InGame);
@@ -444,7 +476,7 @@ impl EngineApp for MinecrustApp {
                     if let Ok(addr) = addr_str.parse::<std::net::SocketAddr>() {
                         log::info!("Connecting to multiplayer server: {}...", addr);
                         if let Ok((server_tx, server_rx)) = crate::lan::connect_multiplayer(addr, "Player".to_string()) {
-                            let mut new_game = GameSession::new(server_tx, server_rx);
+                            let mut new_game = GameSession::new(server_tx, server_rx, Arc::clone(&self.game.block_registry));
                             new_game.asset_pack = self.game.asset_pack.take();
                             self.game = new_game;
                             self.transition_state(AppState::InGame);
@@ -458,8 +490,8 @@ impl EngineApp for MinecrustApp {
                 ui::MultiplayerAction::HostLan => {
                     log::info!("Hosting LAN multiplayer server on random port...");
                     let bind_addr = "0.0.0.0:0".parse::<std::net::SocketAddr>().unwrap();
-                    let (server_tx, server_rx) = minecrust_server::IntegratedServer::start(12345, Some(bind_addr));
-                    let mut new_game = GameSession::new(server_tx, server_rx);
+                    let (server_tx, server_rx) = minecrust_server::server::IntegratedServer::start(12345, Some(bind_addr), Arc::clone(&self.game.block_registry));
+                    let mut new_game = GameSession::new(server_tx, server_rx, Arc::clone(&self.game.block_registry));
                     new_game.asset_pack = self.game.asset_pack.take();
                     self.game = new_game;
                     self.transition_state(AppState::InGame);
@@ -515,8 +547,8 @@ impl MinecrustApp {
     fn transition_state(&mut self, next_state: AppState) {
         if self.state != next_state {
             // Check if we are crossing the InGame / MainMenu boundary to change music
-            let was_in_game_branch = matches!(self.state, AppState::InGame | AppState::InGameMenu | AppState::Settings { from_in_game: true });
-            let is_in_game_branch = matches!(next_state, AppState::InGame | AppState::InGameMenu | AppState::Settings { from_in_game: true });
+            let was_in_game_branch = matches!(self.state, AppState::InGame | AppState::Inventory | AppState::InGameMenu | AppState::Settings { from_in_game: true });
+            let is_in_game_branch = matches!(next_state, AppState::InGame | AppState::Inventory | AppState::InGameMenu | AppState::Settings { from_in_game: true });
 
             if !was_in_game_branch && is_in_game_branch {
                 self.audio.play_music("assets/raw/minecraft/sounds/music/game/clark.ogg");

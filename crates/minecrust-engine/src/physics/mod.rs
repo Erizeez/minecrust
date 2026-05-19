@@ -39,6 +39,7 @@ impl PhysicsManager {
         aabb: &AABB,
         velocity: Vec3,
         dt: f32,
+        is_solid: &impl Fn(u16) -> bool,
     ) -> (Vec3, bool) {
         let mut final_vel = velocity * dt;
         let mut grounded = false;
@@ -49,7 +50,7 @@ impl PhysicsManager {
         // 1. Y Axis
         if final_vel.y != 0.0 {
             let next_aabb = aabb.offset(Vec3::new(0.0, final_vel.y, 0.0));
-            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb) {
+            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb, &is_solid) {
                 if final_vel.y < 0.0 {
                     grounded = true;
                 }
@@ -60,7 +61,7 @@ impl PhysicsManager {
         // 2. X Axis
         if final_vel.x != 0.0 {
             let next_aabb = aabb.offset(Vec3::new(final_vel.x, final_vel.y, 0.0));
-            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb) {
+            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb, &is_solid) {
                 final_vel.x = 0.0;
             }
         }
@@ -68,7 +69,7 @@ impl PhysicsManager {
         // 3. Z Axis
         if final_vel.z != 0.0 {
             let next_aabb = aabb.offset(Vec3::new(final_vel.x, final_vel.y, final_vel.z));
-            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb) {
+            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb, &is_solid) {
                 final_vel.z = 0.0;
             }
         }
@@ -84,7 +85,7 @@ impl PhysicsManager {
     }
 
     /// Checks if the given AABB intersects with any solid block in the world.
-    fn check_aabb_collision_with_chunks(chunk_manager: &crate::world::ChunkManager, aabb: &AABB) -> bool {
+    fn check_aabb_collision_with_chunks(chunk_manager: &crate::world::ChunkManager, aabb: &AABB, is_solid: &impl Fn(u16) -> bool) -> bool {
         use crate::world::{CHUNK_WIDTH, CHUNK_DEPTH};
 
         let min_x = aabb.min.x.floor() as i32;
@@ -106,7 +107,7 @@ impl PhysicsManager {
 
                     if let Some(chunk) = chunk_manager.chunks.get(&(chunk_x, chunk_z)) {
                         let block_id = chunk.get_block(local_x, y, local_z);
-                        if block_id != 0 {
+                        if is_solid(block_id) {
                             return true;
                         }
                     } else {
@@ -121,7 +122,7 @@ impl PhysicsManager {
 
     /// Performs a simple point raycast from `start` in the given `dir` (normalized) up to `max_dist`.
     /// Returns the distance at which it hits a solid block, or `max_dist` if no hit occurs.
-    pub fn raycast_distance_with_chunks(chunk_manager: &crate::world::ChunkManager, start: Vec3, dir: Vec3, max_dist: f32) -> f32 {
+    pub fn raycast_distance_with_chunks(chunk_manager: &crate::world::ChunkManager, start: Vec3, dir: Vec3, max_dist: f32, is_solid: &impl Fn(u16) -> bool) -> f32 {
         let step_size = 0.1;
         let steps = (max_dist / step_size).ceil() as usize;
         
@@ -137,7 +138,7 @@ impl PhysicsManager {
             let pos = start + dir * dist;
             let aabb = AABB::new(pos - camera_bounds, pos + camera_bounds);
             
-            if Self::check_aabb_collision_with_chunks(chunk_manager, &aabb) {
+            if Self::check_aabb_collision_with_chunks(chunk_manager, &aabb, &is_solid) {
                 // Return distance but retract slightly so we aren't completely inside the block
                 return (dist - 0.2).max(0.0);
             }

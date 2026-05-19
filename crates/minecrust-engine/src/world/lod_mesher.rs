@@ -62,7 +62,7 @@ impl LodMesher {
                     [px + quad_size, py, pz + quad_size],
                     [px + quad_size, py, pz],
                     [px, py, pz],
-                    color,
+                    [color[0], color[1], color[2], 1.0],
                     uv_center,
                 );
                 
@@ -74,7 +74,7 @@ impl LodMesher {
                         [px, py, pz + quad_size],
                         [px, h_nx as f32, pz + quad_size],
                         [px, h_nx as f32, pz],
-                        [color[0] * 0.7, color[1] * 0.7, color[2] * 0.7], // Fake lighting
+                        [color[0] * 0.7, color[1] * 0.7, color[2] * 0.7, 1.0], // Fake lighting
                         uv_center,
                     );
                 }
@@ -87,7 +87,7 @@ impl LodMesher {
                         [px + quad_size, py, pz],
                         [px + quad_size, h_px as f32, pz],
                         [px + quad_size, h_px as f32, pz + quad_size],
-                        [color[0] * 0.9, color[1] * 0.9, color[2] * 0.9],
+                        [color[0] * 0.9, color[1] * 0.9, color[2] * 0.9, 1.0],
                         uv_center,
                     );
                 }
@@ -100,7 +100,7 @@ impl LodMesher {
                         [px, py, pz],
                         [px, h_nz as f32, pz],
                         [px + quad_size, h_nz as f32, pz],
-                        [color[0] * 0.6, color[1] * 0.6, color[2] * 0.6],
+                        [color[0] * 0.6, color[1] * 0.6, color[2] * 0.6, 1.0],
                         uv_center,
                     );
                 }
@@ -113,7 +113,7 @@ impl LodMesher {
                         [px + quad_size, py, pz + quad_size],
                         [px + quad_size, h_pz as f32, pz + quad_size],
                         [px, h_pz as f32, pz + quad_size],
-                        [color[0] * 1.0, color[1] * 1.0, color[2] * 1.0],
+                        [color[0] * 1.0, color[1] * 1.0, color[2] * 1.0, 1.0],
                         uv_center,
                     );
                 }
@@ -130,7 +130,7 @@ impl LodMesher {
         v1: [f32; 3],
         v2: [f32; 3],
         v3: [f32; 3],
-        color: [f32; 3],
+        color: [f32; 4],
         uv_center: [f32; 2],
     ) {
         let base_idx = vertices.len() as u32;

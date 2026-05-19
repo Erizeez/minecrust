@@ -22,8 +22,14 @@ pub fn render_menus(
     let mut exit_requested = false;
     let current_state = *state;
 
+    let bg_color = if current_state == AppState::MainMenu {
+        Color32::TRANSPARENT
+    } else {
+        Color32::from_black_alpha(150)
+    };
+
     egui::CentralPanel::default()
-        .frame(Frame::default().fill(Color32::from_black_alpha(150)))
+        .frame(Frame::default().fill(bg_color))
         .show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(30.0);
@@ -31,7 +37,21 @@ pub fn render_menus(
                 match current_state {
                     AppState::MainMenu => {
                         ui.heading(RichText::new("MINECRUST").size(60.0).strong());
-                        ui.add_space(50.0);
+                        ui.add_space(20.0);
+
+                        ui.label(RichText::new("Select Character:").color(Color32::WHITE).size(20.0));
+                        ui.add_space(250.0); // Push the buttons down under the 3D models
+
+                        ui.columns(2, |columns| {
+                            columns[0].vertical_centered(|ui| {
+                                if ui.selectable_value(&mut settings.player_model, crate::steve::PlayerModelType::Steve, "Steve (Wide)").clicked() {}
+                            });
+                            columns[1].vertical_centered(|ui| {
+                                if ui.selectable_value(&mut settings.player_model, crate::steve::PlayerModelType::Alex, "Alex (Slim)").clicked() {}
+                            });
+                        });
+                        
+                        ui.add_space(40.0);
 
                         if ui.add_sized([220.0, 40.0], egui::Button::new(lang.get("menu.singleplayer"))).clicked() {
                             *action_trigger = Some(MultiplayerAction::JoinSingleplayer);

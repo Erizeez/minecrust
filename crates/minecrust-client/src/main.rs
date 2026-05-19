@@ -6,6 +6,7 @@ pub mod state;
 pub mod ui;
 pub mod lan;
 pub mod steve;
+pub mod entity_meshes;
 
 use app::MinecrustApp;
 use minecrust_engine::EngineRunner;

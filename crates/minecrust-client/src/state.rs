@@ -13,6 +13,7 @@ pub struct AppSettings {
     pub vsync: bool,
     pub fullscreen: bool,
     pub language: String,
+    pub player_model: crate::steve::PlayerModelType,
 }
 
 impl Default for AppSettings {
@@ -22,6 +23,7 @@ impl Default for AppSettings {
             vsync: true,
             fullscreen: false,
             language: "zh_cn".to_string(),
+            player_model: crate::steve::PlayerModelType::Steve,
         }
     }
 }

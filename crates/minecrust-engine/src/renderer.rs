@@ -57,6 +57,11 @@ pub struct Renderer {
     // Depth buffer
     depth_texture_view: wgpu::TextureView,
 
+    // Entities
+    entity_buffer: wgpu::Buffer,
+    entity_bind_group: wgpu::BindGroup,
+    pub entity_alignment: u32,
+
     pub ui: crate::ui::EngineUi,
 }
 
@@ -183,6 +188,43 @@ impl Renderer {
             label: Some("atlas_bind_group_layout"),
         });
 
+        // Entity Layout (Dynamic)
+        let entity_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(64),
+                },
+                count: None,
+            }],
+            label: Some("entity_bind_group_layout"),
+        });
+
+        let entity_alignment = adapter.limits().min_uniform_buffer_offset_alignment as u32;
+        let max_entities = 1024;
+        let entity_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Entity Uniform Buffer"),
+            size: (entity_alignment * max_entities) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let entity_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &entity_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &entity_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(64),
+                }),
+            }],
+            label: Some("entity_bind_group"),
+        });
+
         // Pipeline
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
@@ -191,7 +233,7 @@ impl Renderer {
 
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&camera_bind_group_layout, &atlas_bind_group_layout],
+            bind_group_layouts: &[&camera_bind_group_layout, &atlas_bind_group_layout, &entity_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -259,6 +301,9 @@ impl Renderer {
             atlas_bind_group: None,
             atlas_bind_group_layout,
             depth_texture_view,
+            entity_buffer,
+            entity_bind_group,
+            entity_alignment,
             ui,
         }
     }
@@ -373,7 +418,8 @@ impl Renderer {
     pub fn draw<'a>(
         &mut self,
         window: &winit::window::Window,
-        meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32)>,
+        chunk_meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32)>,
+        entity_meshes: impl Iterator<Item = (&'a wgpu::Buffer, &'a wgpu::Buffer, u32, &'a glam::Mat4)>,
         ui_builder: impl FnOnce(&egui::Context),
     ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
@@ -429,7 +475,36 @@ impl Renderer {
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_bind_group(1, self.atlas_bind_group.as_ref().unwrap(), &[]);
             
-            for (vertex_buffer, index_buffer, index_count) in meshes {
+            // Collect entity meshes and their matrices to write them to the buffer
+            let mut entities_drawn = 0;
+            let mut entity_draw_calls = Vec::new();
+            
+            // Write identity matrix at offset 0 for chunks
+            self.queue.write_buffer(&self.entity_buffer, 0, bytemuck::cast_slice(&[glam::Mat4::IDENTITY.to_cols_array_2d()]));
+            render_pass.set_bind_group(2, &self.entity_bind_group, &[0]);
+
+            for (vertex_buffer, index_buffer, index_count) in chunk_meshes {
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..index_count, 0, 0..1);
+            }
+
+            // Entities
+            for (vertex_buffer, index_buffer, index_count, model_mat) in entity_meshes {
+                let entity_index = entities_drawn + 1; // 0 is identity
+                if entity_index >= 1024 {
+                    break;
+                }
+                
+                let offset = entity_index * self.entity_alignment;
+                self.queue.write_buffer(&self.entity_buffer, offset as wgpu::BufferAddress, bytemuck::cast_slice(&[model_mat.to_cols_array_2d()]));
+                
+                entity_draw_calls.push((vertex_buffer, index_buffer, index_count, offset));
+                entities_drawn += 1;
+            }
+
+            for (vertex_buffer, index_buffer, index_count, offset) in entity_draw_calls {
+                render_pass.set_bind_group(2, &self.entity_bind_group, &[offset]);
                 render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..index_count, 0, 0..1);

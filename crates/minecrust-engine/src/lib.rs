@@ -7,6 +7,8 @@ pub mod world;
 pub mod physics;
 pub mod input;
 pub mod ui;
+pub mod systems;
+pub mod hecs_test;
 
 // Re-export common types
 pub use egui;

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 pub mod world;
 pub mod protocol;
+pub mod ecs;
 
 /// The final cooked asset pack loaded by the wgpu client.
 #[derive(Serialize, Deserialize, Debug)]
@@ -13,6 +14,8 @@ pub struct AssetPack {
     pub atlas_png: Vec<u8>,
     /// The dictionary mapping block namespace names (e.g. "minecraft:stone") to rendering data
     pub block_dict: HashMap<String, BlockRenderData>,
+    /// The dictionary mapping raw texture paths to their atlas UV boundaries
+    pub texture_dict: HashMap<String, [f32; 4]>,
 }
 
 /// The rendering data for a specific block (MVP only stores basic full cube blocks)

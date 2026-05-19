@@ -11,6 +11,13 @@ var t_diffuse: texture_2d<f32>;
 @group(1) @binding(1)
 var s_diffuse: sampler;
 
+// Bind Group 2: Entity Transform (Optional for chunks, required for entities)
+struct EntityUniform {
+    model: mat4x4<f32>,
+};
+@group(2) @binding(0)
+var<uniform> entity: EntityUniform;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) uv: vec2<f32>,
@@ -30,9 +37,11 @@ fn vs_main(
     var out: VertexOutput;
     out.uv = model.uv;
     out.color = model.color;
-    // In the future, we will multiply by a Model matrix here per chunk/entity.
-    // For MVP, we assume model.position is already in world space relative to camera, or we just draw at origin.
-    out.clip_position = camera.view_proj * vec4<f32>(model.position, 1.0);
+    
+    // Apply entity model matrix
+    let world_position = entity.model * vec4<f32>(model.position, 1.0);
+    out.clip_position = camera.view_proj * world_position;
+    
     return out;
 }
 

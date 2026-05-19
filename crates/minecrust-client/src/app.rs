@@ -27,6 +27,9 @@ pub struct MinecrustApp {
     loader: AssetLoader,
     lan_discoverer: crate::lan::LanServerDiscoverer,
     connect_addr: String,
+    main_menu_steve: Option<crate::game::Mesh>,
+    main_menu_alex: Option<crate::game::Mesh>,
+    entity_meshes: Option<crate::entity_meshes::EntityMeshes>,
 }
 
 impl MinecrustApp {
@@ -36,8 +39,8 @@ impl MinecrustApp {
             renderer: None,
             camera: Camera {
                 eye: glam::Vec3::new(8.0, 40.0, 8.0),
-                target: glam::Vec3::new(8.0, 0.0, 8.0),
-                up: glam::Vec3::Y,
+                yaw: 0.0,
+                pitch: -std::f32::consts::FRAC_PI_2,
                 aspect: 16.0 / 9.0,
                 fovy: std::f32::consts::FRAC_PI_4,
                 znear: 0.1,
@@ -53,6 +56,9 @@ impl MinecrustApp {
             loader: AssetLoader::new(),
             lan_discoverer: crate::lan::LanServerDiscoverer::new(),
             connect_addr: "127.0.0.1:25565".to_string(),
+            main_menu_steve: None,
+            main_menu_alex: None,
+            entity_meshes: None,
         }
     }
 }
@@ -82,6 +88,21 @@ impl EngineApp for MinecrustApp {
 
             renderer.load_atlas_bytes(&pack.atlas_png, 1024, 1024);
 
+            let (steve_v, steve_i) = crate::steve::build_steve_vertices(glam::Vec3::new(6.0, 100.0, 8.0), &pack, crate::steve::PlayerModelType::Steve);
+            self.main_menu_steve = Some(crate::game::Mesh {
+                vertex_buffer: renderer.create_vertex_buffer(&steve_v),
+                index_buffer: renderer.create_index_buffer(&steve_i),
+                index_count: steve_i.len() as u32,
+            });
+
+            let (alex_v, alex_i) = crate::steve::build_steve_vertices(glam::Vec3::new(10.0, 100.0, 8.0), &pack, crate::steve::PlayerModelType::Alex);
+            self.main_menu_alex = Some(crate::game::Mesh {
+                vertex_buffer: renderer.create_vertex_buffer(&alex_v),
+                index_buffer: renderer.create_index_buffer(&alex_i),
+                index_count: alex_i.len() as u32,
+            });
+
+            self.entity_meshes = Some(crate::entity_meshes::EntityMeshes::new(&renderer.device, &pack, self.settings.player_model));
             self.game.asset_pack = Some(pack);
         } else {
             log::error!("Failed to load assets.mca! Run asset-cli first.");
@@ -152,23 +173,37 @@ impl EngineApp for MinecrustApp {
 
         let in_game_play = self.state == AppState::InGame;
         if in_game_play {
-            self.game.update(dt, self.time, self.settings.render_distance, self.renderer.as_ref());
+            self.game.update(dt, self.time, self.settings.render_distance, self.settings.player_model, self.renderer.as_ref());
         }
 
         // Update Camera Eye and Target
         match self.state {
             AppState::InGame | AppState::InGameMenu | AppState::Settings { from_in_game: true } => {
-                let (eye, target) = self.game.player.get_camera_vectors();
+                let (eye, yaw, pitch) = {
+                    use minecrust_shared::ecs::player::Player;
+                    use minecrust_shared::ecs::transform::LocalTransform;
+                    use minecrust_engine::systems::player::get_camera_vectors;
+                    
+                    if let Ok(player) = self.game.world_manager.ecs.get::<&Player>(self.game.local_player_entity) {
+                        if let Ok(transform) = self.game.world_manager.ecs.get::<&LocalTransform>(self.game.local_player_entity) {
+                            get_camera_vectors(&player, &transform, &self.game.world_manager.chunk_manager)
+                        } else {
+                            (glam::Vec3::ZERO, 0.0, 0.0)
+                        }
+                    } else {
+                        (glam::Vec3::ZERO, 0.0, 0.0)
+                    }
+                };
                 self.camera.eye = eye;
-                self.camera.target = target;
+                self.camera.yaw = yaw;
+                self.camera.pitch = pitch;
             }
             AppState::MainMenu | AppState::MultiplayerMenu | AppState::Settings { from_in_game: false } => {
-                let radius = 50.0;
-                let center = glam::Vec3::new(8.0, 60.0, 8.0);
-                let speed = 0.05;
-                let angle = self.time as f32 * speed;
-                self.camera.eye = center + glam::Vec3::new(angle.cos() * radius, 20.0, angle.sin() * radius);
-                self.camera.target = center;
+                let center = glam::Vec3::new(8.0, 101.5, 8.0);
+                self.camera.eye = center + glam::Vec3::new(0.0, 0.0, 4.0); // look from Z=12 to Z=8
+                let forward = (center - self.camera.eye).normalize();
+                self.camera.yaw = forward.z.atan2(forward.x);
+                self.camera.pitch = forward.y.asin();
             }
         }
 
@@ -228,14 +263,48 @@ impl EngineApp for MinecrustApp {
         let mut action_trigger = None;
 
         if let Some(renderer) = &mut self.renderer {
-            let chunk_meshes = self.game.chunk_meshes.values()
-                .map(|m| (&m.vertex_buffer, &m.index_buffer, m.index_count));
-            let steve_meshes = self.game.other_players.values()
-                .filter_map(|p| p.mesh.as_ref())
-                .map(|m| (&m.vertex_buffer, &m.index_buffer, m.index_count));
-            let meshes_iter = chunk_meshes.chain(steve_meshes);
+            let mut all_meshes = Vec::new();
+            if self.state == AppState::MainMenu {
+                if let Some(m) = &self.main_menu_steve {
+                    all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                }
+                if let Some(m) = &self.main_menu_alex {
+                    all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                }
+            } else {
+                for m in self.game.chunk_meshes.values() {
+                    all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                }
+                for p in self.game.other_players.values() {
+                    if let Some(m) = &p.mesh {
+                        all_meshes.push((&m.vertex_buffer, &m.index_buffer, m.index_count));
+                    }
+                }
+            }
 
-            match renderer.draw(window, meshes_iter, |ctx| {
+            let mut ecs_draw_calls = Vec::new();
+            let mut ecs_transforms = Vec::new();
+            if self.state != AppState::MainMenu {
+                let is_first_person = if let Ok(player) = self.game.world_manager.ecs.get::<&minecrust_shared::ecs::player::Player>(self.game.local_player_entity) {
+                    player.camera_mode == minecrust_shared::ecs::player::CameraMode::FirstPerson
+                } else { false };
+
+                if !is_first_person {
+                    if let Some(em) = &self.entity_meshes {
+                        for (mesh, global_transform) in self.game.world_manager.ecs.query_mut::<(&minecrust_shared::ecs::mesh::Mesh, &minecrust_shared::ecs::transform::GlobalTransform)>() {
+                            if let Some((v, i, count)) = em.meshes.get(&mesh.mesh_id) {
+                                ecs_draw_calls.push((v, i, *count));
+                                ecs_transforms.push(global_transform.0);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            let ecs_iter = ecs_draw_calls.into_iter().zip(ecs_transforms.iter())
+                .map(|((v, i, count), mat)| (v, i, count, mat));
+
+            match renderer.draw(window, all_meshes.into_iter(), ecs_iter, |ctx| {
                 if !in_game {
                     exit_requested = ui::render_menus(
                         ctx,

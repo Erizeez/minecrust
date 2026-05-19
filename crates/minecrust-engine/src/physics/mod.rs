@@ -34,8 +34,8 @@ impl PhysicsManager {
 
     /// Resolves collision for an entity with `aabb` trying to move by `velocity` * `dt`.
     /// Returns the modified velocity that does not interpenetrate with blocks.
-    pub fn resolve_collision(
-        world: &mut WorldManager,
+    pub fn resolve_collision_with_chunks(
+        chunk_manager: &crate::world::ChunkManager,
         aabb: &AABB,
         velocity: Vec3,
         dt: f32,
@@ -49,7 +49,7 @@ impl PhysicsManager {
         // 1. Y Axis
         if final_vel.y != 0.0 {
             let next_aabb = aabb.offset(Vec3::new(0.0, final_vel.y, 0.0));
-            if Self::check_aabb_collision(world, &next_aabb) {
+            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb) {
                 if final_vel.y < 0.0 {
                     grounded = true;
                 }
@@ -60,7 +60,7 @@ impl PhysicsManager {
         // 2. X Axis
         if final_vel.x != 0.0 {
             let next_aabb = aabb.offset(Vec3::new(final_vel.x, final_vel.y, 0.0));
-            if Self::check_aabb_collision(world, &next_aabb) {
+            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb) {
                 final_vel.x = 0.0;
             }
         }
@@ -68,7 +68,7 @@ impl PhysicsManager {
         // 3. Z Axis
         if final_vel.z != 0.0 {
             let next_aabb = aabb.offset(Vec3::new(final_vel.x, final_vel.y, final_vel.z));
-            if Self::check_aabb_collision(world, &next_aabb) {
+            if Self::check_aabb_collision_with_chunks(chunk_manager, &next_aabb) {
                 final_vel.z = 0.0;
             }
         }
@@ -84,7 +84,7 @@ impl PhysicsManager {
     }
 
     /// Checks if the given AABB intersects with any solid block in the world.
-    fn check_aabb_collision(world: &mut WorldManager, aabb: &AABB) -> bool {
+    fn check_aabb_collision_with_chunks(chunk_manager: &crate::world::ChunkManager, aabb: &AABB) -> bool {
         use crate::world::{CHUNK_WIDTH, CHUNK_DEPTH};
 
         let min_x = aabb.min.x.floor() as i32;
@@ -104,16 +104,45 @@ impl PhysicsManager {
                     let local_x = x.rem_euclid(CHUNK_WIDTH as i32) as usize;
                     let local_z = z.rem_euclid(CHUNK_DEPTH as i32) as usize;
 
-                    let chunk = world.chunk_manager.get_or_generate(chunk_x, chunk_z);
-                    let block_id = chunk.get_block(local_x, y, local_z);
-                    
-                    if block_id != 0 {
-                        // Intersects with a solid block!
+                    if let Some(chunk) = chunk_manager.chunks.get(&(chunk_x, chunk_z)) {
+                        let block_id = chunk.get_block(local_x, y, local_z);
+                        if block_id != 0 {
+                            return true;
+                        }
+                    } else {
+                        // If chunk is not loaded, act as solid to prevent falling out
                         return true;
                     }
                 }
             }
         }
         false
+    }
+
+    /// Performs a simple point raycast from `start` in the given `dir` (normalized) up to `max_dist`.
+    /// Returns the distance at which it hits a solid block, or `max_dist` if no hit occurs.
+    pub fn raycast_distance_with_chunks(chunk_manager: &crate::world::ChunkManager, start: Vec3, dir: Vec3, max_dist: f32) -> f32 {
+        let step_size = 0.1;
+        let steps = (max_dist / step_size).ceil() as usize;
+        
+        // Use a small AABB to simulate camera bounds to prevent clipping through tight corners
+        let camera_bounds = Vec3::new(0.1, 0.1, 0.1);
+
+        for i in 0..=steps {
+            let dist = (i as f32) * step_size;
+            if dist > max_dist {
+                break;
+            }
+            
+            let pos = start + dir * dist;
+            let aabb = AABB::new(pos - camera_bounds, pos + camera_bounds);
+            
+            if Self::check_aabb_collision_with_chunks(chunk_manager, &aabb) {
+                // Return distance but retract slightly so we aren't completely inside the block
+                return (dist - 0.2).max(0.0);
+            }
+        }
+        
+        max_dist
     }
 }

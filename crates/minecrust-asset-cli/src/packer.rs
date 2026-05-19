@@ -14,7 +14,7 @@ pub struct AtlasPacker {
     canvas: RgbaImage,
     next_x: u32,
     next_y: u32,
-    tile_size: u32,
+    current_row_height: u32,
     canvas_size: u32,
     texture_map: HashMap<String, PackedUV>,
 }
@@ -25,19 +25,27 @@ impl AtlasPacker {
             canvas: RgbaImage::new(canvas_size, canvas_size),
             next_x: 0,
             next_y: 0,
-            tile_size,
+            current_row_height: 0,
             canvas_size,
             texture_map: HashMap::new(),
         }
     }
 
-    /// Add a 16x16 image to the atlas and return its UV mapping
     pub fn add_texture(&mut self, name: &str, img: &RgbaImage) -> anyhow::Result<&PackedUV> {
         if self.texture_map.contains_key(name) {
             return Ok(self.texture_map.get(name).unwrap());
         }
 
-        if self.next_y >= self.canvas_size {
+        let w = img.width();
+        let h = img.height();
+
+        if self.next_x + w > self.canvas_size {
+            self.next_x = 0;
+            self.next_y += self.current_row_height;
+            self.current_row_height = 0;
+        }
+
+        if self.next_y + h > self.canvas_size {
             anyhow::bail!("Atlas is full!");
         }
 
@@ -47,18 +55,15 @@ impl AtlasPacker {
         // Calculate UVs (0.0 to 1.0)
         let u0 = self.next_x as f32 / self.canvas_size as f32;
         let v0 = self.next_y as f32 / self.canvas_size as f32;
-        let u1 = (self.next_x + self.tile_size) as f32 / self.canvas_size as f32;
-        let v1 = (self.next_y + self.tile_size) as f32 / self.canvas_size as f32;
+        let u1 = (self.next_x + w) as f32 / self.canvas_size as f32;
+        let v1 = (self.next_y + h) as f32 / self.canvas_size as f32;
 
         let packed_uv = PackedUV { u0, v0, u1, v1 };
         self.texture_map.insert(name.to_string(), packed_uv);
 
         // Advance grid
-        self.next_x += self.tile_size;
-        if self.next_x >= self.canvas_size {
-            self.next_x = 0;
-            self.next_y += self.tile_size;
-        }
+        self.next_x += w;
+        self.current_row_height = self.current_row_height.max(h);
 
         Ok(self.texture_map.get(name).unwrap())
     }

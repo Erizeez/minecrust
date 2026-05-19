@@ -1,5 +1,4 @@
 pub mod mesher;
-pub mod player;
 
 pub use minecrust_shared::world::chunk::{Chunk, CHUNK_WIDTH, CHUNK_DEPTH, CHUNK_HEIGHT, CHUNK_VOLUME, MIN_Y, MAX_Y};
 pub use minecrust_shared::world::generator::WorldGenerator;

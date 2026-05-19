@@ -64,6 +64,7 @@ fn main() -> anyhow::Result<()> {
             // 2. Resolve textures and pack them into the atlas
             let mut packer = AtlasPacker::new(1024, 16);
             let mut block_dict = HashMap::new();
+            let mut texture_dict = HashMap::new();
 
             println!("Resolving and packing textures...");
             let target_blocks = vec!["stone", "dirt", "grass_block"];
@@ -99,6 +100,25 @@ fn main() -> anyhow::Result<()> {
                 block_dict.insert(format!("minecraft:{}", target), BlockRenderData { uv_faces });
             }
 
+            // 2b. Extract special entity textures (Steve and Alex)
+            let special_textures = vec![
+                "assets/minecraft/textures/entity/player/wide/steve.png",
+                "assets/minecraft/textures/entity/player/slim/alex.png",
+            ];
+            
+            for tex_path in special_textures {
+                if let Ok(bytes) = extractor.read_file_as_bytes(tex_path) {
+                    if let Ok(img) = image::load_from_memory(&bytes) {
+                        let rgba = img.to_rgba8();
+                        // Use the file name as the identifier, e.g., "steve" or "alex"
+                        let name = tex_path.split('/').last().unwrap().replace(".png", "");
+                        if let Ok(packed_uv) = packer.add_texture(&name, &rgba) {
+                            texture_dict.insert(name, [packed_uv.u0, packed_uv.v0, packed_uv.u1, packed_uv.v1]);
+                        }
+                    }
+                }
+            }
+
             // 3. Serialize AssetPack
             println!("Serializing to {:?}...", out_file);
             if let Some(parent) = out_file.parent() {
@@ -109,10 +129,11 @@ fn main() -> anyhow::Result<()> {
                 version: "1.21.1-mvp".to_string(),
                 atlas_png: packer.get_canvas_bytes(),
                 block_dict,
+                texture_dict,
             };
 
             serializer::save_asset_pack(&pack, out_file)?;
-            println!("Successfully packed {} blocks!", pack.block_dict.len());
+            println!("Successfully packed {} blocks and {} textures!", pack.block_dict.len(), pack.texture_dict.len());
         }
     }
 

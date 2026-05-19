@@ -11,8 +11,8 @@ pub const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols_array(&[
 
 pub struct Camera {
     pub eye: Vec3,
-    pub target: Vec3,
-    pub up: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
     pub aspect: f32,
     pub fovy: f32,
     pub znear: f32,
@@ -21,7 +21,14 @@ pub struct Camera {
 
 impl Camera {
     pub fn build_view_projection_matrix(&self) -> Mat4 {
-        let view = Mat4::look_at_rh(self.eye, self.target, self.up);
+        let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
+        let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
+
+        let forward = Vec3::new(cos_yaw * cos_pitch, sin_pitch, sin_yaw * cos_pitch);
+        let right = Vec3::new(-sin_yaw, 0.0, cos_yaw).normalize();
+        let up = right.cross(forward).normalize();
+
+        let view = Mat4::look_to_rh(self.eye, forward, up);
         let proj = Mat4::perspective_rh(self.fovy, self.aspect, self.znear, self.zfar);
         
         // wgpu expects z in 0.0 to 1.0, so we convert from OpenGL's -1.0 to 1.0

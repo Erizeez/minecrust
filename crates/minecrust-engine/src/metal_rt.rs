@@ -153,6 +153,7 @@ impl MetalRtContext {
     pub fn dispatch(
         &self,
         output: &wgpu::TextureView,
+        history: &wgpu::TextureView,
         albedo: &wgpu::TextureView,
         normal: &wgpu::TextureView,
         mrao: &wgpu::TextureView,
@@ -161,6 +162,7 @@ impl MetalRtContext {
         tlas: Option<&metal::AccelerationStructure>,
     ) {
         let mtl_output = unsafe { Self::extract_texture_view(output) };
+        let mtl_history = unsafe { Self::extract_texture_view(history) };
         let mtl_albedo = unsafe { Self::extract_texture_view(albedo) };
         let mtl_normal = unsafe { Self::extract_texture_view(normal) };
         let mtl_mrao = unsafe { Self::extract_texture_view(mrao) };
@@ -177,10 +179,11 @@ impl MetalRtContext {
         encoder.set_texture(2, Some(&mtl_normal));
         encoder.set_texture(3, Some(&mtl_mrao));
         encoder.set_texture(4, Some(&mtl_depth));
-        encoder.set_buffer(5, Some(&mtl_camera), 0);
+        encoder.set_texture(5, Some(&mtl_history));
+        encoder.set_buffer(6, Some(&mtl_camera), 0);
 
         if let Some(accel) = tlas {
-            encoder.set_acceleration_structure(6, Some(accel.as_ref()));
+            encoder.set_acceleration_structure(7, Some(accel.as_ref()));
         }
 
         let width = mtl_output.width();

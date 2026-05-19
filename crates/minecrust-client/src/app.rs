@@ -215,6 +215,8 @@ impl EngineApp for MinecrustApp {
 
         self.camera_uniform.update_view_proj(&self.camera);
         self.camera_uniform.update_time(self.game.world_time);
+        self.camera_uniform.update_frame_index();
+        self.camera_uniform.update_settings(self.settings.enable_raytracing);
 
         if let Some(renderer) = &mut self.renderer {
             renderer.update_camera(&self.camera_uniform);

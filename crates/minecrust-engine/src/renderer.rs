@@ -77,6 +77,8 @@ pub struct Renderer {
     pub gbuffer_mrao_tex: wgpu::Texture,
     pub final_rt_output_tex: wgpu::Texture,
     pub final_rt_output_view: wgpu::TextureView,
+    pub history_rt_output_tex: wgpu::Texture,
+    pub history_rt_output_view: wgpu::TextureView,
     pub gbuffer_albedo_view: wgpu::TextureView,
     pub gbuffer_normal_view: wgpu::TextureView,
     pub gbuffer_mrao_view: wgpu::TextureView,
@@ -198,11 +200,21 @@ impl Renderer {
             size: wgpu::Extent3d { width: config.width, height: config.height, depth_or_array_layers: 1 },
             mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
             label: Some("Final RT Output"),
             view_formats: &[],
         });
         let final_rt_output_view = final_rt_output_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let history_rt_output_tex = device.create_texture(&wgpu::TextureDescriptor {
+            size: wgpu::Extent3d { width: config.width, height: config.height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("History RT Output"),
+            view_formats: &[],
+        });
+        let history_rt_output_view = history_rt_output_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Camera Uniform
         let mut camera_uniform = CameraUniform::new();
@@ -415,6 +427,8 @@ impl Renderer {
             gbuffer_mrao_tex,
             final_rt_output_tex,
             final_rt_output_view,
+            history_rt_output_tex,
+            history_rt_output_view,
             gbuffer_albedo_view,
             gbuffer_normal_view,
             gbuffer_mrao_view,
@@ -479,11 +493,21 @@ impl Renderer {
                 size: wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
                 mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
                 label: Some("Final RT Output"),
                 view_formats: &[],
             });
             self.final_rt_output_view = self.final_rt_output_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            self.history_rt_output_tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                size: wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                label: Some("History RT Output"),
+                view_formats: &[],
+            });
+            self.history_rt_output_view = self.history_rt_output_tex.create_view(&wgpu::TextureViewDescriptor::default());
         }
     }
 
@@ -774,6 +798,7 @@ impl Renderer {
         if let Some(metal_rt) = &self.metal_rt_ctx {
             metal_rt.dispatch(
                 &self.final_rt_output_view,
+                &self.history_rt_output_view,
                 &self.gbuffer_albedo_view,
                 &self.gbuffer_normal_view,
                 &self.gbuffer_mrao_view,
@@ -786,6 +811,23 @@ impl Renderer {
         let mut ui_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("UI Encoder"),
         });
+
+        // Copy current output to history for next frame
+        ui_encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.final_rt_output_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+                texture: &self.history_rt_output_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+        );
 
         ui_encoder.copy_texture_to_texture(
             wgpu::ImageCopyTexture {

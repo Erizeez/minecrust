@@ -170,6 +170,15 @@ pub fn render_menus(
                         }
                         ui.add_space(10.0);
 
+                        let rt_label = format!(
+                            "Ray Tracing: {}",
+                            if settings.enable_raytracing { "ON" } else { "OFF" }
+                        );
+                        if ui.add_sized([200.0, 40.0], egui::Button::new(rt_label)).clicked() {
+                            settings.enable_raytracing = !settings.enable_raytracing;
+                        }
+                        ui.add_space(10.0);
+
                         // Language Toggle Button
                         let current_lang_name = match settings.language.as_str() {
                             "zh_cn" => "简体中文",

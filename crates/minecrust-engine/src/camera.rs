@@ -41,9 +41,12 @@ impl Camera {
 pub struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     inv_view_proj: [[f32; 4]; 4],
+    prev_view_proj: [[f32; 4]; 4],
     camera_pos: [f32; 4],
     world_time: f32,
-    _padding: [f32; 3], // Pad to 16 bytes alignment
+    frame_index: u32,
+    enable_rt: u32,
+    _padding: u32, // Pad to 16 bytes alignment
 }
 
 impl CameraUniform {
@@ -51,13 +54,18 @@ impl CameraUniform {
         Self {
             view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             inv_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
+            prev_view_proj: Mat4::IDENTITY.to_cols_array_2d(),
             camera_pos: [0.0; 4],
             world_time: 0.0,
-            _padding: [0.0; 3],
+            frame_index: 0,
+            enable_rt: 1,
+            _padding: 0,
         }
     }
 
     pub fn update_view_proj(&mut self, camera: &Camera) {
+        self.prev_view_proj = self.view_proj;
+        
         let view_proj = camera.build_view_projection_matrix();
         self.view_proj = view_proj.to_cols_array_2d();
         self.inv_view_proj = view_proj.inverse().to_cols_array_2d();
@@ -66,5 +74,13 @@ impl CameraUniform {
     
     pub fn update_time(&mut self, time: f32) {
         self.world_time = time;
+    }
+
+    pub fn update_frame_index(&mut self) {
+        self.frame_index = self.frame_index.wrapping_add(1);
+    }
+
+    pub fn update_settings(&mut self, enable_rt: bool) {
+        self.enable_rt = if enable_rt { 1 } else { 0 };
     }
 }

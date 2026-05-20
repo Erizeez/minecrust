@@ -23,7 +23,6 @@ use minecrust_engine::renderer::RenderMesh;
 pub struct RemotePlayer {
     pub username: String,
     pub position: glam::Vec3,
-    pub mesh: Option<RenderMesh>,
 }
 
 pub struct GameSession {
@@ -288,17 +287,7 @@ impl GameSession {
                 }
             }
 
-            // 4b. Mesh other players' Steve models
-            for (id, player) in self.other_players.iter_mut() {
-                if player.mesh.is_none() {
-                    let model_type = if id % 2 == 0 { crate::steve::PlayerModelType::Steve } else { crate::steve::PlayerModelType::Alex };
-                    let (vertices, indices) = crate::steve::build_steve_vertices(player.position, pack, model_type);
-                    if !indices.is_empty() {
-                        let mesh = renderer.create_render_mesh(&vertices, &indices);
-                        player.mesh = Some(mesh);
-                    }
-                }
-            }
+
             
             // 4c. Generate LOD meshes
             let generator = self.world_manager.chunk_manager.generator.clone();
@@ -355,14 +344,11 @@ impl GameSession {
                 self.other_players.insert(id, RemotePlayer {
                     username,
                     position,
-                    mesh: None,
                 });
             }
             ServerMessage::PlayerMoved { id, position } => {
                 if let Some(player) = self.other_players.get_mut(&id) {
                     player.position = position;
-                    // Reset mesh to force regeneration at the new position
-                    player.mesh = None;
                 }
             }
             ServerMessage::PlayerLeft { id } => {

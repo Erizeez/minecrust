@@ -32,6 +32,8 @@ pub struct MinecrustApp {
     connect_addr: String,
     main_menu_steve: Option<minecrust_engine::renderer::RenderMesh>,
     main_menu_alex: Option<minecrust_engine::renderer::RenderMesh>,
+    shared_steve_mesh: Option<std::sync::Arc<minecrust_engine::renderer::RenderMesh>>,
+    shared_alex_mesh: Option<std::sync::Arc<minecrust_engine::renderer::RenderMesh>>,
 }
 
 impl MinecrustApp {
@@ -64,6 +66,8 @@ impl MinecrustApp {
             connect_addr: "127.0.0.1:25565".to_string(),
             main_menu_steve: None,
             main_menu_alex: None,
+            shared_steve_mesh: None,
+            shared_alex_mesh: None,
         }
     }
 }
@@ -83,9 +87,9 @@ impl EngineApp for MinecrustApp {
         let mut renderer = pollster::block_on(Renderer::new(window));
 
         // Load AssetPack
-        let mca_path = "assets/processed/assets.mca";
-        log::info!("Loading assets from {}", mca_path);
-        if let Ok(mut file) = File::open(mca_path) {
+        let mca_path = self.loader.assets_root().join("processed/assets.mca");
+        log::info!("Loading assets from {:?}", mca_path);
+        if let Ok(mut file) = File::open(&mca_path) {
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes).unwrap();
             let pack: AssetPack = bincode::deserialize(&bytes).unwrap();
@@ -98,6 +102,12 @@ impl EngineApp for MinecrustApp {
 
             let (alex_v, alex_i) = crate::steve::build_steve_vertices(glam::Vec3::new(10.0, 100.0, 8.0), &pack, crate::steve::PlayerModelType::Alex);
             self.main_menu_alex = Some(renderer.create_render_mesh(&alex_v, &alex_i));
+
+            let (shared_steve_v, shared_steve_i) = crate::steve::build_steve_vertices(glam::Vec3::ZERO, &pack, crate::steve::PlayerModelType::Steve);
+            self.shared_steve_mesh = Some(Arc::new(renderer.create_render_mesh(&shared_steve_v, &shared_steve_i)));
+
+            let (shared_alex_v, shared_alex_i) = crate::steve::build_steve_vertices(glam::Vec3::ZERO, &pack, crate::steve::PlayerModelType::Alex);
+            self.shared_alex_mesh = Some(Arc::new(renderer.create_render_mesh(&shared_alex_v, &shared_alex_i)));
 
             let arc_pack = Arc::new(pack);
             
@@ -129,8 +139,8 @@ impl EngineApp for MinecrustApp {
         let mut loaded_minecraft = false;
 
         // Load Minecraft custom English font
-        let font_path = "assets/raw/font/MinecraftDefault-Regular.ttf";
-        if let Ok(mut font_file) = File::open(font_path) {
+        let font_path = self.loader.assets_root().join("raw/font/MinecraftDefault-Regular.ttf");
+        if let Ok(mut font_file) = File::open(&font_path) {
             let mut font_bytes = Vec::new();
             if font_file.read_to_end(&mut font_bytes).is_ok() {
                 font_defs.font_data.insert(
@@ -151,8 +161,8 @@ impl EngineApp for MinecrustApp {
         }
 
         // Load GNU Unifont (Minecraft original CJK pixel font) as fallback
-        let unifont_path = "assets/raw/font/unifont.ttf";
-        if let Ok(mut unifont_file) = File::open(unifont_path) {
+        let unifont_path = self.loader.assets_root().join("raw/font/unifont.ttf");
+        if let Ok(mut unifont_file) = File::open(&unifont_path) {
             let mut unifont_bytes = Vec::new();
             if unifont_file.read_to_end(&mut unifont_bytes).is_ok() {
                 font_defs.font_data.insert(
@@ -179,7 +189,8 @@ impl EngineApp for MinecrustApp {
         self.renderer = Some(renderer);
         
         // Start Menu Music
-        self.audio.play_music("assets/raw/minecraft/sounds/music/menu/mutation.ogg");
+        let menu_music_path = self.loader.assets_root().join("raw/minecraft/sounds/music/menu/mutation.ogg");
+        self.audio.play_music(&menu_music_path.to_string_lossy());
     }
 
     fn on_update(&mut self, dt: f64) {
@@ -322,11 +333,15 @@ impl EngineApp for MinecrustApp {
             
             let mut extra_entities = Vec::new();
             if self.state != AppState::MainMenu {
-                for p in self.game.other_players.values() {
-                    if let Some(m) = &p.mesh {
-                        // Needs a transform matrix. For now, use identity since player mesh has position baked in vertices
-                        // Wait, build_steve_vertices bakes position into the vertices. So Mat4::IDENTITY is correct.
-                        extra_entities.push((m, glam::Mat4::IDENTITY));
+                for (id, p) in &self.game.other_players {
+                    let mesh = if id % 2 == 0 {
+                        self.shared_steve_mesh.as_ref()
+                    } else {
+                        self.shared_alex_mesh.as_ref()
+                    };
+                    if let Some(m) = mesh {
+                        let translation = glam::Mat4::from_translation(p.position);
+                        extra_entities.push((m.as_ref(), translation));
                     }
                 }
             }
@@ -551,9 +566,11 @@ impl MinecrustApp {
             let is_in_game_branch = matches!(next_state, AppState::InGame | AppState::Inventory | AppState::InGameMenu | AppState::Settings { from_in_game: true });
 
             if !was_in_game_branch && is_in_game_branch {
-                self.audio.play_music("assets/raw/minecraft/sounds/music/game/clark.ogg");
+                let game_music_path = self.loader.assets_root().join("raw/minecraft/sounds/music/game/clark.ogg");
+                self.audio.play_music(&game_music_path.to_string_lossy());
             } else if was_in_game_branch && !is_in_game_branch {
-                self.audio.play_music("assets/raw/minecraft/sounds/music/menu/mutation.ogg");
+                let menu_music_path = self.loader.assets_root().join("raw/minecraft/sounds/music/menu/mutation.ogg");
+                self.audio.play_music(&menu_music_path.to_string_lossy());
             }
 
             self.state = next_state;

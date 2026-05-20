@@ -83,4 +83,8 @@ impl CameraUniform {
     pub fn update_settings(&mut self, enable_rt: bool) {
         self.enable_rt = if enable_rt { 1 } else { 0 };
     }
+
+    pub fn enable_rt(&self) -> bool {
+        self.enable_rt != 0
+    }
 }

@@ -95,7 +95,7 @@ pub fn player_movement_system(
             transform.translation + Vec3::new(0.3, 1.8, 0.3),
         );
 
-        let (final_vel, grounded) = PhysicsManager::resolve_collision_with_chunks(chunk_manager, &player_aabb, player.velocity, dt_f32, is_solid);
+        let (final_vel, grounded) = PhysicsManager::resolve_collision_with_chunks(&chunk_manager.chunks, &player_aabb, player.velocity, dt_f32, is_solid);
         
         player.velocity = final_vel;
         if !player.is_flying {
@@ -173,13 +173,13 @@ pub fn get_camera_vectors(player: &Player, transform: &LocalTransform, chunk_man
         }
         CameraMode::ThirdPersonBack => {
             let max_dist = 4.0;
-            let actual_dist = PhysicsManager::raycast_distance_with_chunks(chunk_manager, eye, -forward, max_dist, &is_solid);
+            let actual_dist = PhysicsManager::raycast_distance_with_chunks(&chunk_manager.chunks, eye, -forward, max_dist, &is_solid);
             let actual_eye = eye - forward * actual_dist;
             (actual_eye, player.yaw, player.pitch)
         }
         CameraMode::ThirdPersonFront => {
             let max_dist = 4.0;
-            let actual_dist = PhysicsManager::raycast_distance_with_chunks(chunk_manager, eye, forward, max_dist, &is_solid);
+            let actual_dist = PhysicsManager::raycast_distance_with_chunks(&chunk_manager.chunks, eye, forward, max_dist, &is_solid);
             let actual_eye = eye + forward * actual_dist;
             (actual_eye, player.yaw + std::f32::consts::PI, -player.pitch)
         }

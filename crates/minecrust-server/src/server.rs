@@ -9,6 +9,7 @@ use laminar::{Socket, SocketEvent, Packet};
 
 use minecrust_shared::protocol::{ClientMessage, ServerMessage};
 use minecrust_shared::world::generator::WorldGenerator;
+use minecrust_shared::physics::{AABB, PhysicsManager};
 use minecrust_engine::world::WorldManager;
 
 pub struct IntegratedServer {
@@ -29,6 +30,12 @@ pub struct IntegratedServer {
     requested_chunks: HashSet<(i32, i32)>,
     
     world_time: u32,
+
+    // Server-side authoritative chunks cache
+    chunks: HashMap<(i32, i32), Arc<minecrust_shared::world::chunk::Chunk>>,
+    // Positions tracking for validation
+    singleplayer_pos: Option<glam::Vec3>,
+    client_positions: HashMap<SocketAddr, glam::Vec3>,
 }
 
 impl IntegratedServer {
@@ -115,6 +122,9 @@ impl IntegratedServer {
                     next_entity_id: 1,
                     requested_chunks: HashSet::new(),
                     world_time: 0,
+                    chunks: HashMap::new(),
+                    singleplayer_pos: None,
+                    client_positions: HashMap::new(),
                 };
                 server.run_loop();
             })
@@ -192,26 +202,67 @@ impl IntegratedServer {
             ClientMessage::Join { username } => {
                 info!("Player {} joined the singleplayer server.", username);
                 let spawn_pos = glam::Vec3::new(8.0, 60.0, 8.0);
+                self.singleplayer_pos = Some(spawn_pos);
                 if let Some(ref tx) = self.tx {
                     let _ = tx.send(ServerMessage::JoinAck { spawn_pos });
                 }
             }
             ClientMessage::RequestChunk { cx, cz } => {
-                if self.requested_chunks.insert((cx, cz)) {
-                    let generator = Arc::clone(&self.generator);
-                    if let Some(ref tx) = self.tx {
-                        let tx = tx.clone();
-                        thread::spawn(move || {
-                            let chunk = generator.generate_chunk(cx, cz);
-                            let _ = tx.send(ServerMessage::ChunkData { cx, cz, chunk });
-                        });
-                    }
+                let chunk = self.chunks.entry((cx, cz)).or_insert_with(|| {
+                    Arc::new(self.generator.generate_chunk(cx, cz))
+                });
+                if let Some(ref tx) = self.tx {
+                    let _ = tx.send(ServerMessage::ChunkData { cx, cz, chunk: Arc::clone(chunk) });
                 }
             }
             ClientMessage::PlayerMove { x, y, z, yaw: _, pitch: _ } => {
-                let player_pos = glam::Vec3::new(x, y, z);
+                let requested_pos = glam::Vec3::new(x, y, z);
+                
+                // 1. Get player's previous authoritative position (initialize if missing)
+                let prev_pos = self.singleplayer_pos.unwrap_or(glam::Vec3::new(8.0, 60.0, 8.0));
+                
+                // 2. Compute velocity vector intent
+                let requested_vel = requested_pos - prev_pos;
+                
+                // 3. Build AABB at the previous authoritative position
+                let player_aabb = AABB::new(
+                    prev_pos - glam::Vec3::new(0.3, 0.0, 0.3),
+                    prev_pos + glam::Vec3::new(0.3, 1.8, 0.3),
+                );
+                
+                // 4. Resolve collision against authoritative server chunks
+                let is_solid = {
+                    let registry = std::sync::Arc::clone(self.generator.registry());
+                    move |block_id: u16| -> bool {
+                        if block_id == 0 { return false; }
+                        let name = registry.get_name(block_id).map(|s| s.as_str()).unwrap_or("");
+                        !name.contains("water")
+                    }
+                };
+                
+                let (resolved_vel, _grounded) = PhysicsManager::resolve_collision_with_chunks(
+                    &self.chunks,
+                    &player_aabb,
+                    requested_vel,
+                    1.0,
+                    &is_solid,
+                );
+                let corrected_pos = prev_pos + resolved_vel;
+                
+                // 5. Compare with client requested position and rollback if invalid
+                let dist_sq = corrected_pos.distance_squared(requested_pos);
+                let final_pos = if dist_sq > 1e-4 {
+                    // Invalid/Clipping detected: Force a rollback to the server's collision-resolved position
+                    corrected_pos
+                } else {
+                    // Valid movement: Accept client position
+                    requested_pos
+                };
+                
+                self.singleplayer_pos = Some(final_pos);
+                
                 if let Some(ref tx) = self.tx {
-                    let _ = tx.send(ServerMessage::PlayerPosAck { position: player_pos });
+                    let _ = tx.send(ServerMessage::PlayerPosAck { position: final_pos });
                 }
             }
         }
@@ -229,6 +280,7 @@ impl IntegratedServer {
                 self.client_usernames.insert(addr, username.clone());
                 
                 let spawn_pos = glam::Vec3::new(8.0, 60.0, 8.0);
+                self.client_positions.insert(addr, spawn_pos);
                 
                 // 1. Send JoinAck to the joined player
                 self.send_to_client(addr, ServerMessage::JoinAck { spawn_pos }, 0);
@@ -265,30 +317,67 @@ impl IntegratedServer {
                 }
             }
             ClientMessage::RequestChunk { cx, cz } => {
-                // For safety, per-connection chunk requesting
-                let generator = Arc::clone(&self.generator);
-                let socket_sender = self.laminar_sender.as_ref().unwrap().clone();
-                
-                thread::spawn(move || {
-                    let chunk = generator.generate_chunk(cx, cz);
-                    let msg = ServerMessage::ChunkData { cx, cz, chunk };
-                    let payload = bincode::serialize(&msg).unwrap();
-                    let packet = Packet::reliable_ordered(addr, payload, Some(0));
-                    let _ = socket_sender.send(packet);
+                let chunk = self.chunks.entry((cx, cz)).or_insert_with(|| {
+                    Arc::new(self.generator.generate_chunk(cx, cz))
                 });
+                let msg = ServerMessage::ChunkData { cx, cz, chunk: Arc::clone(chunk) };
+                self.send_to_client(addr, msg, 0);
             }
             ClientMessage::PlayerMove { x, y, z, yaw: _, pitch: _ } => {
                 if let Some(&player_id) = self.clients.get(&addr) {
-                    let player_pos = glam::Vec3::new(x, y, z);
+                    let requested_pos = glam::Vec3::new(x, y, z);
                     
-                    // Acknowledge position to the sender (optional, but good for heartbeat)
-                    self.send_to_client(addr, ServerMessage::PlayerPosAck { position: player_pos }, 1);
+                    // 1. Get player's previous authoritative position (initialize if missing)
+                    let prev_pos = *self.client_positions.get(&addr).unwrap_or(&glam::Vec3::new(8.0, 60.0, 8.0));
                     
-                    // Broadcast movement to all other players over channel 1 (unreliable-sequenced)
+                    // 2. Compute velocity vector intent
+                    let requested_vel = requested_pos - prev_pos;
+                    
+                    // 3. Build AABB at the previous authoritative position
+                    let player_aabb = AABB::new(
+                        prev_pos - glam::Vec3::new(0.3, 0.0, 0.3),
+                        prev_pos + glam::Vec3::new(0.3, 1.8, 0.3),
+                    );
+                    
+                    // 4. Resolve collision against authoritative server chunks
+                    let is_solid = {
+                        let registry = std::sync::Arc::clone(self.generator.registry());
+                        move |block_id: u16| -> bool {
+                            if block_id == 0 { return false; }
+                            let name = registry.get_name(block_id).map(|s| s.as_str()).unwrap_or("");
+                            !name.contains("water")
+                        }
+                    };
+                    
+                    let (resolved_vel, _grounded) = PhysicsManager::resolve_collision_with_chunks(
+                        &self.chunks,
+                        &player_aabb,
+                        requested_vel,
+                        1.0,
+                        &is_solid,
+                    );
+                    let corrected_pos = prev_pos + resolved_vel;
+                    
+                    // 5. Compare with client requested position and rollback if invalid
+                    let dist_sq = corrected_pos.distance_squared(requested_pos);
+                    let final_pos = if dist_sq > 1e-4 {
+                        // Invalid/Clipping detected: Force a rollback to the server's collision-resolved position
+                        corrected_pos
+                    } else {
+                        // Valid movement: Accept client position
+                        requested_pos
+                    };
+                    
+                    self.client_positions.insert(addr, final_pos);
+                    
+                    // 6. Acknowledge position to the sender (optional, but good for heartbeat)
+                    self.send_to_client(addr, ServerMessage::PlayerPosAck { position: final_pos }, 1);
+                    
+                    // 7. Broadcast movement to all other players over channel 1 (unreliable-sequenced)
                     self.broadcast(
                         ServerMessage::PlayerMoved {
                             id: player_id,
-                            position: player_pos,
+                            position: final_pos,
                         },
                         1,
                         Some(addr),
@@ -301,6 +390,7 @@ impl IntegratedServer {
     fn handle_disconnect(&mut self, addr: SocketAddr) {
         if let Some(player_id) = self.clients.remove(&addr) {
             let username = self.client_usernames.remove(&addr).unwrap_or_default();
+            self.client_positions.remove(&addr);
             info!("Player {} (ID {}) disconnected.", username, player_id);
             
             // Broadcast player departure

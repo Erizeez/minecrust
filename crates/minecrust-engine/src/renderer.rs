@@ -10,20 +10,19 @@ pub struct Vertex {
     pub uv: [f32; 2],
     pub color: [f32; 4],
 }
-
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "rt-metal"))]
 pub struct BlasWrapper(pub metal::AccelerationStructure);
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "rt-metal"))]
 unsafe impl Send for BlasWrapper {}
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "rt-metal"))]
 unsafe impl Sync for BlasWrapper {}
 
 pub struct RenderMesh {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "rt-metal"))]
     pub blas: Option<BlasWrapper>,
 }
 
@@ -83,12 +82,17 @@ pub struct Renderer {
     pub gbuffer_albedo_view: wgpu::TextureView,
     pub gbuffer_normal_view: wgpu::TextureView,
     pub gbuffer_mrao_view: wgpu::TextureView,
-    
     // Depth buffer
     depth_texture_view: wgpu::TextureView,
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", feature = "rt-metal"))]
     pub metal_rt_ctx: Option<crate::metal_rt::MetalRtContext>,
+
+    pub fallback_pipeline: wgpu::RenderPipeline,
+    pub fallback_bind_group_layout: wgpu::BindGroupLayout,
+    pub fallback_bind_group: wgpu::BindGroup,
+    pub fallback_sampler: wgpu::Sampler,
+    pub enable_rt: bool,
 
     // Entities
     entity_buffer: wgpu::Buffer,
@@ -405,10 +409,141 @@ impl Renderer {
             1,
             window.clone(),
         );
+        // Fallback Deferred Shading configuration
+        let fallback_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Depth,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+            label: Some("fallback_bind_group_layout"),
+        });
 
-        #[cfg(target_os = "macos")]
+        let fallback_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Fallback Pipeline Layout"),
+            bind_group_layouts: &[&fallback_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let fallback_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Fallback Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("deferred.wgsl").into()),
+        });
+
+        let fallback_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Fallback Render Pipeline"),
+            layout: Some(&fallback_pipeline_layout),
+            cache: None,
+            vertex: wgpu::VertexState {
+                module: &fallback_shader,
+                entry_point: "vs_main",
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &fallback_shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
+        let fallback_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Fallback Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let fallback_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &fallback_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&gbuffer_albedo_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&gbuffer_normal_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&gbuffer_mrao_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&depth_texture_view) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&fallback_sampler) },
+                wgpu::BindGroupEntry { binding: 5, resource: camera_buffer.as_entire_binding() },
+            ],
+            label: Some("fallback_bind_group"),
+        });
+
+        #[cfg(all(target_os = "macos", feature = "rt-metal"))]
         let metal_rt_ctx = Some(crate::metal_rt::MetalRtContext::new(&device, &queue));
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(all(target_os = "macos", feature = "rt-metal")))]
         let metal_rt_ctx = None;
 
         let adapter_info = adapter.get_info();
@@ -438,6 +573,11 @@ impl Renderer {
             gbuffer_mrao_view,
             depth_texture_view,
             metal_rt_ctx,
+            fallback_pipeline,
+            fallback_bind_group_layout,
+            fallback_bind_group,
+            fallback_sampler,
+            enable_rt: true,
             entity_buffer,
             entity_bind_group,
             entity_alignment,
@@ -513,11 +653,25 @@ impl Renderer {
                 view_formats: &[],
             });
             self.history_rt_output_view = self.history_rt_output_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+            self.fallback_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.fallback_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.gbuffer_albedo_view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&self.gbuffer_normal_view) },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.gbuffer_mrao_view) },
+                    wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&self.depth_texture_view) },
+                    wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::Sampler(&self.fallback_sampler) },
+                    wgpu::BindGroupEntry { binding: 5, resource: self.camera_buffer.as_entire_binding() },
+                ],
+                label: Some("fallback_bind_group"),
+            });
         }
     }
 
     pub fn update_camera(&mut self, camera_uniform: &CameraUniform) {
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::cast_slice(&[*camera_uniform]));
+        self.enable_rt = camera_uniform.enable_rt();
     }
 
     pub fn load_atlas_bytes(&mut self, albedo_bytes: &[u8], normal_bytes: &[u8], specular_bytes: &[u8], width: u32, height: u32) {
@@ -608,7 +762,7 @@ impl Renderer {
         let vertex_buffer = self.create_vertex_buffer(vertices);
         let index_buffer = self.create_index_buffer(indices);
         
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "rt-metal"))]
         let blas = {
             if let Some(metal_rt) = &self.metal_rt_ctx {
                 let mtl_vb = unsafe { crate::metal_rt::MetalRtContext::extract_buffer(&vertex_buffer) };
@@ -628,7 +782,7 @@ impl Renderer {
             vertex_buffer,
             index_buffer,
             index_count: indices.len() as u32,
-            #[cfg(target_os = "macos")]
+            #[cfg(all(target_os = "macos", feature = "rt-metal"))]
             blas,
         }
     }
@@ -661,9 +815,9 @@ impl Renderer {
             label: Some("Render Encoder"),
         });
 
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "rt-metal"))]
         let mut tlas_instances = Vec::new();
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "rt-metal"))]
         let mut tlas_blas_owned = Vec::new();
 
         // 1. Draw 3D world
@@ -705,7 +859,7 @@ impl Renderer {
                 render_pass.set_index_buffer(render_mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..render_mesh.index_count, 0, 0..1);
                 
-                #[cfg(target_os = "macos")]
+                #[cfg(all(target_os = "macos", feature = "rt-metal"))]
                 if let Some(blas) = &render_mesh.blas {
                     let cols = glam::Mat4::IDENTITY.to_cols_array_2d();
                     let transform = [
@@ -738,7 +892,7 @@ impl Renderer {
                 entity_draw_calls.push((&render_mesh.vertex_buffer, &render_mesh.index_buffer, render_mesh.index_count, offset));
                 entities_drawn += 1;
 
-                #[cfg(target_os = "macos")]
+                #[cfg(all(target_os = "macos", feature = "rt-metal"))]
                 if let Some(blas) = &render_mesh.blas {
                     let cols = model_mat.to_cols_array_2d();
                     let transform = [
@@ -781,7 +935,7 @@ impl Renderer {
                 
                 entities_drawn += 1;
 
-                #[cfg(target_os = "macos")]
+                #[cfg(all(target_os = "macos", feature = "rt-metal"))]
                 if let Some(blas) = &render_mesh.blas {
                     let cols = model_mat.to_cols_array_2d();
                     let transform = [
@@ -811,31 +965,65 @@ impl Renderer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        #[cfg(target_os = "macos")]
-        let tlas = if let Some(metal_rt) = &self.metal_rt_ctx {
-            if !tlas_instances.is_empty() {
-                let tlas_blas_refs: Vec<&metal::AccelerationStructureRef> = tlas_blas_owned.iter().map(|b| b.as_ref()).collect();
-                Some(metal_rt.build_tlas(&tlas_instances, &tlas_blas_refs))
-            } else {
-                None
+        let use_rt = {
+            #[cfg(all(target_os = "macos", feature = "rt-metal"))]
+            {
+                self.metal_rt_ctx.is_some() && self.enable_rt
             }
-        } else {
-            None
+            #[cfg(not(all(target_os = "macos", feature = "rt-metal")))]
+            {
+                false
+            }
         };
 
-        // Dispatch Metal Compute Shader!
-        #[cfg(target_os = "macos")]
-        if let Some(metal_rt) = &self.metal_rt_ctx {
-            metal_rt.dispatch(
-                &self.final_rt_output_view,
-                &self.history_rt_output_view,
-                &self.gbuffer_albedo_view,
-                &self.gbuffer_normal_view,
-                &self.gbuffer_mrao_view,
-                &self.depth_texture_view,
-                &self.camera_buffer,
-                tlas.as_ref(), // TLAS built from the current frame!
-            );
+        #[cfg(all(target_os = "macos", feature = "rt-metal"))]
+        {
+            if use_rt {
+                if let Some(metal_rt) = &self.metal_rt_ctx {
+                    let tlas = if !tlas_instances.is_empty() {
+                        let tlas_blas_refs: Vec<&metal::AccelerationStructureRef> = tlas_blas_owned.iter().map(|b| b.as_ref()).collect();
+                        Some(metal_rt.build_tlas(&tlas_instances, &tlas_blas_refs))
+                    } else {
+                        None
+                    };
+                    metal_rt.dispatch(
+                        &self.final_rt_output_view,
+                        &self.history_rt_output_view,
+                        &self.gbuffer_albedo_view,
+                        &self.gbuffer_normal_view,
+                        &self.gbuffer_mrao_view,
+                        &self.depth_texture_view,
+                        &self.camera_buffer,
+                        tlas.as_ref(),
+                    );
+                }
+            }
+        }
+
+        if !use_rt {
+            let mut fallback_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Fallback Light Encoder"),
+            });
+            {
+                let mut render_pass = fallback_encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Fallback Deferred Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.final_rt_output_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                render_pass.set_pipeline(&self.fallback_pipeline);
+                render_pass.set_bind_group(0, &self.fallback_bind_group, &[]);
+                render_pass.draw(0..3, 0..1); // Fullscreen Triangle Draw!
+            }
+            self.queue.submit(std::iter::once(fallback_encoder.finish()));
         }
 
         let mut ui_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {

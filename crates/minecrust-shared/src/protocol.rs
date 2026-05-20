@@ -27,7 +27,7 @@ pub enum ServerMessage {
     ChunkData {
         cx: i32,
         cz: i32,
-        chunk: Chunk,
+        chunk: std::sync::Arc<Chunk>,
     },
     PlayerPosAck {
         position: glam::Vec3,

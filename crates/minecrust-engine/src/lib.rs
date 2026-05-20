@@ -10,7 +10,7 @@ pub mod ui;
 pub mod systems;
 pub mod hecs_test;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "rt-metal"))]
 pub mod metal_rt;
 
 // Re-export common types

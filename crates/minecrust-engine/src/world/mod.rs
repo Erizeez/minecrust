@@ -32,7 +32,7 @@ impl WorldManager {
 }
 
 pub struct ChunkManager {
-    pub chunks: HashMap<(i32, i32), Chunk>,
+    pub chunks: HashMap<(i32, i32), std::sync::Arc<Chunk>>,
     pub generator: WorldGenerator,
 }
 
@@ -46,8 +46,9 @@ impl ChunkManager {
 
     /// Retrieves a chunk, generating it synchronously if not present (MVP implementation)
     pub fn get_or_generate(&mut self, chunk_x: i32, chunk_z: i32) -> &Chunk {
-        self.chunks.entry((chunk_x, chunk_z)).or_insert_with(|| {
-            self.generator.generate_chunk(chunk_x, chunk_z)
-        })
+        let chunk_arc = self.chunks.entry((chunk_x, chunk_z)).or_insert_with(|| {
+            std::sync::Arc::new(self.generator.generate_chunk(chunk_x, chunk_z))
+        });
+        &**chunk_arc
     }
 }

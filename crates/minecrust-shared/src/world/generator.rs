@@ -54,6 +54,10 @@ impl WorldGenerator {
             id_diamond_ore,
         }
     }
+
+    pub fn registry(&self) -> &Arc<BlockRegistry> {
+        &self.registry
+    }
     
     pub fn get_surface_height(&self, world_x: f64, world_z: f64) -> i32 {
         let scale = 0.02;
